@@ -344,7 +344,7 @@ export default function ClientPortalPage() {
                     </tr>
                   ))}
 
-                {activeTab === "out" &&
+               {activeTab === "out" && (filteredOut.length > 0) ? 
                   (filteredOut.length > 0 ? (
                     filteredOut.map((row) => (
                       <tr key={row.id} className="hover:bg-slate-800/50">
@@ -353,7 +353,7 @@ export default function ClientPortalPage() {
                         <td className="p-3 font-mono font-bold text-amber-400">-{row.quantity} Pcs</td>
                         <td className="p-3 text-slate-400">{new Date(row.created_at).toLocaleString()}</td>
                       </tr>
-                    ))
+                    )) 
                   ) : (
                     <tr>
                       <td colSpan={4} className="p-6 text-center text-slate-500">
