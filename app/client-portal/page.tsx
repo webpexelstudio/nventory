@@ -1,220 +1,199 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
-import * as XLSX from "xlsx";
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
 
-const COMPANY_DETAILS = {
-  name: "WEB PEXEL STUDIO / NIGEHBAN HEALTHCARE",
-  address: "Gulistan-e-Johar, Karachi, Pakistan",
-  contact: "Ph: +92 315 0274582 | Email: rizwanmadni517@gmail.com",
-  logoPath: "/logo.png",
-};
-
-interface WarehouseLog {
-  id: string;
-  type: "IN" | "OUT";
+interface ClientSession {
+  party_id: string;
   party_name: string;
-  product_name: string;
-  component_type: string;
-  quantity: number;
-  timestamp: string;
-  created_at?: string;
+  client_code: string;
 }
 
-interface InventorySummary {
+interface InventoryLog {
+  id: string;
+  action_type: "IN" | "OUT";
   party_name: string;
-  product_name: string;
-  bottles: number;
-  caps: number;
-  seals: number;
-  boxes: number;
-  created_at?: string;
+  product_name?: string;
+  component_type: string;
+  quantity: number;
+  created_at: string;
+}
+
+interface StockBalance {
+  id: string;
+  party_name: string;
+  product_name?: string;
+  component_type: string;
+  quantity: number;
 }
 
 export default function ClientPortalPage() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [usernameInput, setUsernameInput] = useState("");
-  const [pinInput, setPinInput] = useState("");
-  const [loggedPartyName, setLoggedPartyName] = useState("");
+  const [session, setSession] = useState<ClientSession | null>(null);
+  const [loginCode, setLoginCode] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+
+  const [activeTab, setActiveTab] = useState<"in" | "out" | "balance">("in");
   const [loading, setLoading] = useState(false);
+  const [inLogs, setInLogs] = useState<InventoryLog[]>([]);
+  const [outLogs, setOutLogs] = useState<InventoryLog[]>([]);
+  const [balances, setBalances] = useState<StockBalance[]>([]);
 
-  const [clientWarehouseLogs, setClientWarehouseLogs] = useState<WarehouseLog[]>([]);
-  const [clientInventory, setClientInventory] = useState<InventorySummary[]>([]);
-  const [activeTab, setActiveTab] = useState<"inventory" | "logs">("inventory");
-
-  // Filters
-  const [filterProductName, setFilterProductName] = useState("");
+  const [filterProduct, setFilterProduct] = useState("");
   const [filterStartDate, setFilterStartDate] = useState("");
   const [filterEndDate, setFilterEndDate] = useState("");
 
-  // Handle Database Login
+  useEffect(() => {
+    const savedSession = localStorage.getItem("client_portal_session");
+    if (savedSession) {
+      try {
+        setSession(JSON.parse(savedSession));
+      } catch (e) {
+        localStorage.removeItem("client_portal_session");
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (session?.party_name) {
+      fetchClientInventoryData(session.party_name);
+    }
+  }, [session]);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
+    setAuthError("");
+    setAuthLoading(true);
 
     try {
-      // Supabase سے یوزر نیم اور پن چیک کریں
-      const { data, error } = await supabase
-        .from("party_access")
-        .select("*, parties(name)")
-        .eq("username", usernameInput.trim())
-        .eq("access_pin", pinInput.trim())
-        .eq("is_active", true)
-        .single();
+      // Fetch all parties to do a flexible match (insensitive)
+      const { data, error } = await supabase.from("parties").select("*");
 
-      if (error || !data) {
-        alert("❌ غلط یوزر نیم یا پاسورڈ PIN! براہ کرم درست معلومات درج کریں۔");
-        setLoading(false);
+      if (error || !data || data.length === 0) {
+        setAuthError("डेटाबेस में कोई पार्टी/क्लाइंट नहीं मिला!");
+        setAuthLoading(false);
         return;
       }
 
-      const partyName = data.parties?.name || data.party_name || "Client Party";
-      setLoggedPartyName(partyName);
-      setIsLoggedIn(true);
-      fetchClientPortalData(partyName);
-    } catch (err: any) {
-      // اگر ڈیٹا بیس میں ٹیبل ابھی نہیں بنی تو عارضی ڈیمو لاگ ان (جیسے sohal / 123456) الاؤ کرنے کے لیے:
-      if (usernameInput.trim().toLowerCase() === "sohal" || usernameInput.trim().toLowerCase() === "magitech_user") {
-        setLoggedPartyName("Sohal / Magitech");
-        setIsLoggedIn(true);
-        fetchClientPortalData("Magitech");
-      } else {
-        alert("لاگ ان ایرر: " + err.message);
+      const inputVal = loginCode.trim().toLowerCase();
+      const matchedParty = data.find(
+        (p: any) =>
+          (p.code && p.code.toLowerCase() === inputVal) ||
+          p.name.toLowerCase() === inputVal ||
+          p.id.toLowerCase() === inputVal
+      );
+
+      if (!matchedParty) {
+        setAuthError(`क्लाइंट '${loginCode}' नहीं मिला। कृपया सही नाम या कोड दर्ज करें।`);
+        setAuthLoading(false);
+        return;
       }
+
+      const clientSessionData: ClientSession = {
+        party_id: matchedParty.id,
+        party_name: matchedParty.name,
+        client_code: matchedParty.code || loginCode,
+      };
+
+      setSession(clientSessionData);
+      localStorage.setItem("client_portal_session", JSON.stringify(clientSessionData));
+    } catch (err: any) {
+      setAuthError("لگ ان त्रुटि: " + err.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    setSession(null);
+    localStorage.removeItem("client_portal_session");
+    setLoginCode("");
+    setLoginPassword("");
+  };
+
+  const fetchClientInventoryData = async (partyName: string) => {
+    setLoading(true);
+    try {
+      const { data: inData } = await supabase
+        .from("inventory_logs")
+        .select("*")
+        .eq("action_type", "IN")
+        .ilike("party_name", partyName)
+        .order("created_at", { ascending: false });
+
+      if (inData) setInLogs(inData);
+
+      const { data: outData } = await supabase
+        .from("inventory_logs")
+        .select("*")
+        .eq("action_type", "OUT")
+        .ilike("party_name", partyName)
+        .order("created_at", { ascending: false });
+
+      if (outData) setOutLogs(outData);
+
+      const { data: balData } = await supabase
+        .from("inventory")
+        .select("*")
+        .ilike("party_name", partyName);
+
+      if (balData) setBalances(balData);
+    } catch (err) {
+      console.error(err);
     } finally {
       setLoading(false);
     }
   };
 
-  const fetchClientPortalData = async (partyName: string) => {
-    // اس مخصوص پارٹی کا ڈیٹا فیچ کریں
-    setClientWarehouseLogs([
-      {
-        id: "w1",
-        type: "IN",
-        party_name: partyName,
-        product_name: "Cream 50g",
-        component_type: "Bottle",
-        quantity: 5000,
-        timestamp: "2026-10-03 04:00 PM",
-        created_at: "2026-10-03",
-      },
-      {
-        id: "w2",
-        type: "OUT",
-        party_name: partyName,
-        product_name: "Cream 50g",
-        component_type: "Bottle",
-        quantity: 1000,
-        timestamp: "2026-10-04 11:30 AM",
-        created_at: "2026-10-04",
-      },
-    ]);
-
-    setClientInventory([
-      {
-        party_name: partyName,
-        product_name: "Cream 50g",
-        bottles: 4000,
-        caps: 4500,
-        seals: 4800,
-        boxes: 200,
-        created_at: "2026-10-04",
-      },
-    ]);
-  };
-
-  // EXPORT UTILITIES
-  const exportExcel = (data: any[], fileName: string) => {
-    const worksheet = XLSX.utils.json_to_sheet(data);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
-    XLSX.writeFile(workbook, `${fileName}_${new Date().toISOString().split("T")[0]}.xlsx`);
-  };
-
-  const exportPDFWithLogo = async (title: string, headers: string[], body: any[][]) => {
-    const doc = new jsPDF();
-    doc.setFontSize(14);
-    doc.setFont("helvetica", "bold");
-    doc.text(`${COMPANY_DETAILS.name} - CLIENT PORTAL`, 14, 16);
-    doc.setFontSize(10);
-    doc.text(`Client Company: ${loggedPartyName}`, 14, 23);
-    doc.setFontSize(8);
-    doc.text(`Generated Date: ${new Date().toLocaleString()}`, 14, 29);
-    doc.line(14, 34, 196, 34);
-
-    autoTable(doc, {
-      startY: 40,
-      head: [headers],
-      body: body,
-      theme: "grid",
-      headStyles: { fillColor: [79, 70, 229] },
-      styles: { fontSize: 8 },
-    });
-
-    doc.save(`${loggedPartyName}_${title.toLowerCase().replace(/\s+/g, "_")}.pdf`);
-  };
-
-  const filteredLogs = clientWarehouseLogs.filter((w) => {
-    if (filterProductName && !w.product_name.toLowerCase().includes(filterProductName.toLowerCase())) return false;
-    if (w.created_at) {
-      if (filterStartDate && w.created_at < filterStartDate) return false;
-      if (filterEndDate && w.created_at > filterEndDate) return false;
-    }
-    return true;
-  });
-
-  const filteredInventory = clientInventory.filter((i) => {
-    if (filterProductName && !i.product_name.toLowerCase().includes(filterProductName.toLowerCase())) return false;
-    return true;
-  });
-
-  if (!isLoggedIn) {
+  if (!session) {
     return (
       <div className="min-h-screen bg-[#0b0f19] flex items-center justify-center p-4 font-sans text-slate-100">
-        <div className="bg-[#121827] border border-slate-800 p-8 rounded-2xl w-full max-w-md space-y-6 shadow-2xl">
+        <div className="bg-[#121827] border border-slate-800 rounded-2xl p-6 sm:p-8 w-full max-w-md shadow-2xl space-y-6">
           <div className="text-center space-y-2">
-            <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest bg-indigo-950 px-3 py-1 rounded-full border border-indigo-800">
-              SECURE CLIENT PORTAL
+            <span className="text-xs font-bold text-blue-400 uppercase tracking-widest">
+              CLIENT PORTAL ACCESS
             </span>
-            <h1 className="text-xl font-extrabold text-white">Party Inventory Login</h1>
-            <p className="text-xs text-slate-400">اپنا یوزر نیم اور سیک্রেট پن درج کر کے اپنی انونٹری ملاحظہ کریں</p>
+            <h1 className="text-xl sm:text-2xl font-extrabold text-white">Warehouse Tracking Login</h1>
+            <p className="text-xs text-slate-400">अपनी Party / Company का नाम दर्ज करें (जैसे: MEXITECH)</p>
           </div>
+
+          {authError && (
+            <div className="bg-rose-950/80 border border-rose-800 p-3 rounded-xl text-xs text-rose-300 text-center font-medium">
+              ⚠️ {authError}
+            </div>
+          )}
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-xs text-slate-400 mb-1">Username</label>
+              <label className="text-xs text-slate-400 block mb-1">Company / Party Name</label>
               <input
                 type="text"
-                value={usernameInput}
-                onChange={(e) => setUsernameInput(e.target.value)}
-                placeholder="e.g. sohal"
-                className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                value={loginCode}
+                onChange={(e) => setLoginCode(e.target.value)}
+                placeholder="e.g. MEXITECH"
+                className="w-full bg-[#0b0f19] border border-slate-800 rounded-xl p-3 text-xs text-white uppercase focus:border-blue-500 outline-none"
                 required
               />
             </div>
 
             <div>
-              <label className="block text-xs text-slate-400 mb-1">Secret Password PIN</label>
+              <label className="text-xs text-slate-400 block mb-1">Password (Optional)</label>
               <input
                 type="password"
-                value={pinInput}
-                onChange={(e) => setPinInput(e.target.value)}
-                placeholder="••••••"
-                className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
-                required
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full bg-[#0b0f19] border border-slate-800 rounded-xl p-3 text-xs text-white focus:border-blue-500 outline-none"
               />
             </div>
 
             <button
               type="submit"
-              disabled={loading}
-              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl transition text-xs shadow-lg"
+              disabled={authLoading}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl transition text-xs shadow-lg"
             >
-              {loading ? "Checking..." : "Login to Portal"}
+              {authLoading ? "Verifying..." : "Login to Client Portal"}
             </button>
           </form>
         </div>
@@ -222,191 +201,189 @@ export default function ClientPortalPage() {
     );
   }
 
+  const applyFilters = (items: any[]) => {
+    return items.filter((item) => {
+      if (filterProduct && item.product_name && !item.product_name.toLowerCase().includes(filterProduct.toLowerCase())) {
+        return false;
+      }
+      if (item.created_at) {
+        const itemDate = new Date(item.created_at).toISOString().split("T")[0];
+        if (filterStartDate && itemDate < filterStartDate) return false;
+        if (filterEndDate && itemDate > filterEndDate) return false;
+      }
+      return true;
+    });
+  };
+
+  const filteredIn = applyFilters(inLogs);
+  const filteredOut = applyFilters(outLogs);
+  const filteredBal = balances.filter((b) =>
+    filterProduct ? b.product_name?.toLowerCase().includes(filterProduct.toLowerCase()) : true
+  );
+
   return (
-    <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-6 font-sans space-y-6 max-w-7xl mx-auto">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-slate-800 pb-4 gap-4">
+    <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-3 sm:p-6 font-sans space-y-6">
+      <div className="border-b border-slate-800 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 max-w-7xl mx-auto">
         <div>
-          <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">
-            WELCOME CLIENT: {loggedPartyName.toUpperCase()}
+          <span className="text-xs font-semibold text-blue-400 uppercase tracking-wider">
+            CLIENT PORTAL — {session.party_name}
           </span>
-          <h1 className="text-2xl font-extrabold text-white mt-1">Inventory & Stock Balance Viewer</h1>
+          <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1">
+            Warehouse & Inventory Tracking
+          </h1>
         </div>
-
-        <div className="flex items-center gap-3">
-          <div className="flex bg-[#121827] p-1 rounded-xl border border-slate-800 text-xs">
-            <button
-              onClick={() => setActiveTab("inventory")}
-              className={`px-4 py-2 rounded-lg font-bold transition ${
-                activeTab === "inventory" ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-white"
-              }`}
-            >
-              Stock Balance
-            </button>
-            <button
-              onClick={() => setActiveTab("logs")}
-              className={`px-4 py-2 rounded-lg font-bold transition ${
-                activeTab === "logs" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"
-              }`}
-            >
-              IN / OUT History
-            </button>
-          </div>
-
+        <div className="flex gap-2 w-full sm:w-auto">
           <button
-            onClick={() => setIsLoggedIn(false)}
-            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition"
+            onClick={() => fetchClientInventoryData(session.party_name)}
+            className="flex-1 sm:flex-none px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-md"
           >
-            Logout
+            🔄 Refresh Data
+          </button>
+          <button
+            onClick={handleLogout}
+            className="px-3 py-2 bg-rose-600/30 hover:bg-rose-600 text-rose-300 hover:text-white rounded-xl text-xs font-bold border border-rose-500/30 transition"
+          >
+            🚪 Logout
           </button>
         </div>
       </div>
 
-      <div className="bg-[#121827] border border-slate-800 p-4 rounded-xl grid grid-cols-1 md:grid-cols-3 gap-3">
-        <div>
-          <label className="text-[10px] text-slate-400 block mb-1">Filter by Product Name</label>
-          <input
-            type="text"
-            placeholder="Search Product..."
-            value={filterProductName}
-            onChange={(e) => setFilterProductName(e.target.value)}
-            className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-          />
+      <div className="max-w-7xl mx-auto space-y-6">
+        <div className="flex gap-2 border-b border-slate-800 pb-3">
+          <button
+            onClick={() => setActiveTab("in")}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition ${
+              activeTab === "in" ? "bg-emerald-600 text-white shadow-lg" : "bg-[#121827] text-slate-400 hover:text-white"
+            }`}
+          >
+            📥 Warehouse IN
+          </button>
+          <button
+            onClick={() => setActiveTab("out")}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition ${
+              activeTab === "out" ? "bg-amber-600 text-white shadow-lg" : "bg-[#121827] text-slate-400 hover:text-white"
+            }`}
+          >
+            📤 Warehouse OUT
+          </button>
+          <button
+            onClick={() => setActiveTab("balance")}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition ${
+              activeTab === "balance" ? "bg-blue-600 text-white shadow-lg" : "bg-[#121827] text-slate-400 hover:text-white"
+            }`}
+          >
+            🏢 Stock Balance
+          </button>
         </div>
-        <div>
-          <label className="text-[10px] text-slate-400 block mb-1">From Date</label>
-          <input
-            type="date"
-            value={filterStartDate}
-            onChange={(e) => setFilterStartDate(e.target.value)}
-            className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-          />
+
+        <div className="bg-[#121827] border border-slate-800 p-3 sm:p-4 rounded-xl grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <label className="text-[10px] text-slate-400 block mb-1">Filter by Product Name</label>
+            <input
+              type="text"
+              placeholder="Search product..."
+              value={filterProduct}
+              onChange={(e) => setFilterProduct(e.target.value)}
+              className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] text-slate-400 block mb-1">From Date</label>
+            <input
+              type="date"
+              value={filterStartDate}
+              onChange={(e) => setFilterStartDate(e.target.value)}
+              className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] text-slate-400 block mb-1">To Date</label>
+            <input
+              type="date"
+              value={filterEndDate}
+              onChange={(e) => setFilterEndDate(e.target.value)}
+              className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+            />
+          </div>
         </div>
-        <div>
-          <label className="text-[10px] text-slate-400 block mb-1">To Date</label>
-          <input
-            type="date"
-            value={filterEndDate}
-            onChange={(e) => setFilterEndDate(e.target.value)}
-            className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-          />
+
+        <div className="bg-[#121827] border border-slate-800 p-4 sm:p-6 rounded-2xl shadow-xl space-y-4">
+          <h2 className="text-xs sm:text-sm font-bold text-emerald-400 uppercase tracking-wider">
+            {activeTab === "in" && "WAREHOUSE IN RECORDS (कब-कब माल आया)"}
+            {activeTab === "out" && "WAREHOUSE OUT RECORDS (कब-कब माल गया)"}
+            {activeTab === "balance" && "CURRENT STOCK BALANCE (मौजूदा स्टॉक)"}
+          </h2>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs text-slate-300">
+              <thead className="bg-[#0b0f19] text-slate-400 uppercase font-semibold">
+                <tr>
+                  <th className="p-3">Product Name</th>
+                  <th className="p-3">Item / Component Name</th>
+                  <th className="p-3">Quantity</th>
+                  {activeTab !== "balance" && <th className="p-3">Date & Time</th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {activeTab === "in" &&
+                  (filteredIn.length > 0 ? (
+                    filteredIn.map((row) => (
+                      <tr key={row.id} className="hover:bg-slate-800/50">
+                        <td className="p-3 font-bold text-white">{row.product_name || "N/A"}</td>
+                        <td className="p-3 capitalize text-indigo-300">{row.component_type}</td>
+                        <td className="p-3 font-mono font-bold text-emerald-400">+{row.quantity} Pcs</td>
+                        <td className="p-3 text-slate-400">{new Date(row.created_at).toLocaleString()}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={4} className="p-6 text-center text-slate-500">
+                        कोई IN रिकॉर्ड मौजूद नहीं है।
+                      </td>
+                    </tr>
+                  ))}
+
+                {activeTab === "out" &&
+                  (filteredOut.logCount > 0 || filteredOut.length > 0 ? (
+                    filteredOut.map((row) => (
+                      <tr key={row.id} className="hover:bg-slate-800/50">
+                        <td className="p-3 font-bold text-white">{row.product_name || "N/A"}</td>
+                        <td className="p-3 capitalize text-indigo-300">{row.component_type}</td>
+                        <td className="p-3 font-mono font-bold text-amber-400">-{row.quantity} Pcs</td>
+                        <td className="p-3 text-slate-400">{new Date(row.created_at).toLocaleString()}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={4} className="p-6 text-center text-slate-500">
+                        कोई OUT रिकॉर्ड मौजूद नहीं है।
+                      </td>
+                    </tr>
+                  ))}
+
+                {activeTab === "balance" &&
+                  (filteredBal.length > 0 ? (
+                    filteredBal.map((row) => (
+                      <tr key={row.id} className="hover:bg-slate-800/50">
+                        <td className="p-3 font-bold text-white">{row.product_name || "N/A"}</td>
+                        <td className="p-3 capitalize text-indigo-300">{row.component_type}</td>
+                        <td className="p-3 font-mono font-bold text-blue-400">{row.quantity || 0} Pcs</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={3} className="p-6 text-center text-slate-500">
+                        कोई स्टॉक बैलेंस उपलब्ध नहीं है।
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
-
-      {activeTab === "inventory" && (
-        <div className="bg-[#121827] border border-slate-800 p-6 rounded-xl space-y-4 shadow-lg">
-          <div className="flex justify-between items-center">
-            <h2 className="text-md font-semibold text-white">Your Total Stock Balance</h2>
-            <div className="flex gap-2">
-              <button
-                onClick={() => exportExcel(filteredInventory, `${loggedPartyName}_Inventory`)}
-                className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700 transition"
-              >
-                Export Excel
-              </button>
-              <button
-                onClick={() =>
-                  exportPDFWithLogo(
-                    "Stock Balance Report",
-                    ["Product Name", "Bottles", "Caps", "Seals", "Boxes"],
-                    filteredInventory.map((i) => [i.product_name, i.bottles, i.caps, i.seals, i.boxes])
-                  )
-                }
-                className="px-3 py-1.5 bg-rose-600 text-white text-xs font-bold rounded-lg hover:bg-rose-700 transition"
-              >
-                Export PDF
-              </button>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs text-slate-300">
-              <thead className="bg-[#0b0f19] text-slate-400 uppercase font-semibold">
-                <tr>
-                  <th className="p-3">Product Name</th>
-                  <th className="p-3">Bottles Stock</th>
-                  <th className="p-3">Caps Stock</th>
-                  <th className="p-3">Seals Stock</th>
-                  <th className="p-3">Boxes / Cartons</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800">
-                {filteredInventory.map((inv, idx) => (
-                  <tr key={idx} className="hover:bg-slate-800/50">
-                    <td className="p-3 font-bold text-emerald-400">{inv.product_name}</td>
-                    <td className="p-3 font-mono font-bold text-slate-100">{inv.bottles} Pcs</td>
-                    <td className="p-3 font-mono text-slate-300">{inv.caps} Pcs</td>
-                    <td className="p-3 font-mono text-slate-300">{inv.seals} Pcs</td>
-                    <td className="p-3 font-mono text-amber-300">{inv.boxes} Boxes</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {activeTab === "logs" && (
-        <div className="bg-[#121827] border border-slate-800 p-6 rounded-xl space-y-4 shadow-lg">
-          <div className="flex justify-between items-center">
-            <h2 className="text-md font-semibold text-white">Warehouse IN & OUT History</h2>
-            <div className="flex gap-2">
-              <button
-                onClick={() => exportExcel(filteredLogs, `${loggedPartyName}_Warehouse_Logs`)}
-                className="px-3 py-1.5 bg-emerald-600 text-white text-xs font-bold rounded-lg hover:bg-emerald-700 transition"
-              >
-                Export Excel
-              </button>
-              <button
-                onClick={() =>
-                  exportPDFWithLogo(
-                    "Warehouse IN/OUT History",
-                    ["Type", "Product", "Component", "Quantity", "Date & Time"],
-                    filteredLogs.map((w) => [w.type, w.product_name, w.component_type, w.quantity, w.timestamp])
-                  )
-                }
-                className="px-3 py-1.5 bg-rose-600 text-white text-xs font-bold rounded-lg hover:bg-rose-700 transition"
-              >
-                Export PDF
-              </button>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs text-slate-300">
-              <thead className="bg-[#0b0f19] text-slate-400 uppercase font-semibold">
-                <tr>
-                  <th className="p-3">Type</th>
-                  <th className="p-3">Product Name</th>
-                  <th className="p-3">Component Item</th>
-                  <th className="p-3">Quantity</th>
-                  <th className="p-3">Date & Time</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800">
-                {filteredLogs.map((w) => (
-                  <tr key={w.id} className="hover:bg-slate-800/50">
-                    <td className="p-3">
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                          w.type === "IN"
-                            ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
-                            : "bg-rose-950 text-rose-400 border border-rose-800"
-                        }`}
-                      >
-                        {w.type}
-                      </span>
-                    </td>
-                    <td className="p-3 text-emerald-400 font-semibold">{w.product_name}</td>
-                    <td className="p-3 text-slate-200">{w.component_type}</td>
-                    <td className="p-3 font-mono font-bold text-amber-300">{w.quantity} Pcs</td>
-                    <td className="p-3 text-slate-400">{w.timestamp}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

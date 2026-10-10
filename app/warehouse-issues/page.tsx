@@ -88,6 +88,16 @@ export default function WarehousePortalPage() {
   const [inOutLogs, setInOutLogs] = useState<InventoryLog[]>([]);
   const [stockBalances, setStockBalances] = useState<StockBalance[]>([]);
 
+  // 100% Dynamic Component Types from Database BOM
+  const [dynamicComponentTypes, setDynamicComponentTypes] = useState<string[]>([
+    "bottle",
+    "cap",
+    "nozzle",
+    "seal",
+    "carton",
+    "inner"
+  ]);
+
   // Dispatch Modal State & Weight Verification Modal State
   const [dispatchModalReq, setDispatchModalReq] = useState<FillingRequest | null>(null);
   const [dispatchWeights, setDispatchWeights] = useState<{ [key: string]: string }>({});
@@ -147,6 +157,17 @@ export default function WarehousePortalPage() {
 
       const { data: stockData } = await supabase.from("inventory").select("*");
       if (stockData) setStockBalances(stockData);
+
+      // Fetch dynamic component types from product_bom table
+      const { data: bomTypesData } = await supabase.from("product_bom").select("component_type");
+      if (bomTypesData && bomTypesData.length > 0) {
+        const uniqueTypes = Array.from(new Set(bomTypesData.map((b: any) => b.component_type).filter(Boolean)));
+        if (uniqueTypes.length > 0) {
+          setDynamicComponentTypes(uniqueTypes as string[]);
+          setComponentType(uniqueTypes[0] as string);
+          setOutComponentType(uniqueTypes[0] as string);
+        }
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -161,7 +182,6 @@ export default function WarehousePortalPage() {
   const filteredProductsForOut = productsList.filter((p) => p.party_id === outPartyId);
   const filteredProductsForBal = productsList.filter((p) => p.party_id === balPartyId);
 
-  // Export Utilities
   const exportExcel = (data: any[], fileName: string) => {
     const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
@@ -341,7 +361,33 @@ export default function WarehousePortalPage() {
         ]);
       }
 
-      alert("Stock IN recorded successfully and Balance updated!");
+      // Sync with inventory_summary table
+      const { data: summaryData } = await supabase
+        .from("inventory_summary")
+        .select("*")
+        .eq("party_id", selectedPartyId)
+        .eq("product_id", selectedProductId)
+        .single();
+
+      if (summaryData) {
+        const currentCompQty = summaryData[componentType] || 0;
+        await supabase
+          .from("inventory_summary")
+          .update({ [componentType]: currentCompQty + qtyNum })
+          .eq("id", summaryData.id);
+      } else {
+        await supabase.from("inventory_summary").insert([
+          {
+            party_id: selectedPartyId,
+            party_name: partyObj?.name || "N/A",
+            product_id: selectedProductId,
+            product_name: prodObj?.product_name || "N/A",
+            [componentType]: qtyNum,
+          },
+        ]);
+      }
+
+      alert("Stock IN recorded successfully & Synced with Filling Incharge!");
       setSelectedPartyId("");
       setSelectedProductId("");
       setQtyPcs("");
@@ -366,7 +412,6 @@ export default function WarehousePortalPage() {
       const prodObj = productsList.find((p) => p.id === outProductIdInput);
       const qtyNum = parseInt(outQtyPcs) || 0;
 
-      // Flexible matching for stock balance
       const stockItem = stockBalances.find(
         (s) =>
           (s.party_id === outPartyIdInput || s.party_name?.toLowerCase() === partyObj?.name?.toLowerCase()) &&
@@ -411,7 +456,6 @@ export default function WarehousePortalPage() {
     }
   };
 
-  // Independent Filtered lists
   const filteredRequests = requestsList.filter((r) => {
     if (reqPartyId && r.party_id !== reqPartyId) return false;
     if (reqProductId && r.product_id !== reqProductId) return false;
@@ -510,7 +554,6 @@ export default function WarehousePortalPage() {
           </button>
         </div>
 
-        {/* TAB 1: FILLING REQUESTS & DISPATCH */}
         {activeTab === "requests" && (
           <div className="space-y-4">
             <div className="bg-[#121827] border border-slate-800 p-3 sm:p-4 rounded-xl grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
@@ -692,7 +735,7 @@ export default function WarehousePortalPage() {
           </div>
         )}
 
-        {/* TAB 2: STOCK IN PORTAL */}
+        {/* 100% DYNAMIC COMPONENT TYPE DROPDOWN IN STOCK IN PORTAL */}
         {activeTab === "stock_in" && (
           <div className="space-y-6">
             <div className="bg-[#121827] border border-slate-800 p-4 sm:p-6 rounded-2xl shadow-xl space-y-6">
@@ -734,18 +777,17 @@ export default function WarehousePortalPage() {
                   </div>
 
                   <div>
-                    <label className="text-xs text-slate-400 block mb-1">Component Type</label>
+                    <label className="text-xs text-slate-400 block mb-1">Component Type (Live Dynamic from DB)</label>
                     <select
                       value={componentType}
                       onChange={(e) => setComponentType(e.target.value)}
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white capitalize"
                     >
-                      <option value="bottle">Bottle</option>
-                      <option value="cap">Cap</option>
-                      <option value="nozzle">Nozzle</option>
-                      <option value="seal">Seal</option>
-                      <option value="carton">Carton Box</option>
-                      <option value="inner">Inner Carton</option>
+                      {dynamicComponentTypes.map((type) => (
+                        <option key={type} value={type}>
+                          {type.replace("_", " ")}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -896,7 +938,6 @@ export default function WarehousePortalPage() {
           </div>
         )}
 
-        {/* TAB 3: STOCK OUT PORTAL & HISTORY (WITH MANUAL ISSUE FORM) */}
         {activeTab === "stock_out" && (
           <div className="space-y-6">
             <div className="bg-[#121827] border border-slate-800 p-4 sm:p-6 rounded-2xl shadow-xl space-y-6">
@@ -942,14 +983,11 @@ export default function WarehousePortalPage() {
                     <select
                       value={outComponentType}
                       onChange={(e) => setOutComponentType(e.target.value)}
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white capitalize"
                     >
-                      <option value="bottle">Bottle</option>
-                      <option value="cap">Cap</option>
-                      <option value="nozzle">Nozzle</option>
-                      <option value="seal">Seal</option>
-                      <option value="carton">Carton Box</option>
-                      <option value="inner">Inner Carton</option>
+                      {dynamicComponentTypes.map((type) => (
+                        <option key={type} value={type}>{type.replace("_", " ")}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -1100,7 +1138,6 @@ export default function WarehousePortalPage() {
           </div>
         )}
 
-        {/* TAB 4: INVENTORY BALANCE */}
         {activeTab === "balance" && (
           <div className="space-y-4">
             <div className="bg-[#121827] border border-slate-800 p-3 sm:p-4 rounded-xl grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1295,7 +1332,7 @@ function WeightVerificationModal({
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-50 font-sans text-slate-100 overflow-y-auto">
       <div className="bg-[#121827] border border-slate-800 rounded-2xl w-full max-w-3xl p-4 sm:p-6 space-y-6 shadow-2xl my-auto max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-start border-b border-slate-800 pb-4">
+        <div className="files flex justify-between items-start border-b border-slate-800 pb-4">
           <div>
             <span className="text-[10px] font-bold text-amber-400 uppercase tracking-widest">
               Batch No: {req.batch_no || req.req_code || "N/A"} ({req.pcs_requested} Pcs) | Price: Rs. {req.retail_price || 0}

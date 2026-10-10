@@ -119,48 +119,64 @@ export default function FillingInchargePage() {
     }
   };
 
+  // 100% DYNAMIC LIVE STOCK FETCHING FROM SUPABASE INVENTORY TABLE
   const handleProductSelection = async (prodId: string) => {
     setSelectedProductId(prodId);
     setStockErrorMsg(null);
     setPcsRequested("");
     setProductBomPreview([]);
 
-    if (!prodId) return;
+    if (!prodId || !selectedPartyId) return;
 
     try {
+      // 1. Fetch Product BOM Breakdown
       const { data: bomData } = await supabase
         .from("product_bom")
         .select("*")
         .eq("product_id", prodId);
 
+      // 2. Fetch Live Inventory from DB for the selected Party & Product
       const { data: invData } = await supabase
         .from("inventory")
-        .select("*");
+        .select("*")
+        .eq("party_id", selectedPartyId);
 
       if (bomData && bomData.length > 0) {
         const previewList: BomComponentRequirement[] = bomData.map((item: any) => {
-          const compType = item.component_type || item.component_name || "Component";
-          const matchedInv = invData?.find(
-            (inv: any) => inv.component_type?.toLowerCase() === compType.toLowerCase() && inv.party_id === selectedPartyId
-          );
+          const compType = (item.component_type || item.component_name || "component").trim().toLowerCase();
+          
+          // Match component from inventory table (Party-wise & Component-wise)
+          let liveStock = 0;
+          if (invData && invData.length > 0) {
+            const matchedComp = invData.find(
+              (inv: any) =>
+                inv.component_type?.trim().toLowerCase() === compType &&
+                (inv.product_id === prodId || !inv.product_id)
+            );
+            if (matchedComp) {
+              liveStock = Number(matchedComp.quantity) || 0;
+            }
+          }
+
           return {
             component_type: compType,
-            qty_per_unit: item.qty_per_unit || item.quantity || 1,
-            available_stock: matchedInv ? matchedInv.quantity : 5000,
+            qty_per_unit: Number(item.qty_per_unit || item.quantity) || 1,
+            available_stock: liveStock, // Live Dynamic Value from DB
           };
         });
         setProductBomPreview(previewList);
       } else {
+        // Fallback with 0 stock if no BOM is configured
         setProductBomPreview([
-          { component_type: "bottle", qty_per_unit: 1, available_stock: 4000 },
-          { component_type: "cap", qty_per_unit: 1, available_stock: 2500 },
-          { component_type: "nozzle", qty_per_unit: 1, available_stock: 6000 },
-          { component_type: "seal", qty_per_unit: 1, available_stock: 3000 },
-          { component_type: "carton", qty_per_unit: 0.1, available_stock: 500 },
+          { component_type: "bottle", qty_per_unit: 1, available_stock: 0 },
+          { component_type: "cap", qty_per_unit: 1, available_stock: 0 },
+          { component_type: "nozzle", qty_per_unit: 1, available_stock: 0 },
+          { component_type: "seal", qty_per_unit: 1, available_stock: 0 },
+          { component_type: "carton", qty_per_unit: 0.1, available_stock: 0 },
         ]);
       }
     } catch (err) {
-      console.error(err);
+      console.error("Error fetching live stock:", err);
     }
   };
 
@@ -179,7 +195,7 @@ export default function FillingInchargePage() {
       const requiredTotal = qty * comp.qty_per_unit;
       if (comp.available_stock < requiredTotal) {
         const diff = requiredTotal - comp.available_stock;
-        shortages.push(`${diff} Pcs ${comp.component_type}s kam hain`);
+        shortages.push(`${diff} Pcs ${comp.component_type}s कम हैं`);
         const possibleForThisComp = Math.floor(comp.available_stock / comp.qty_per_unit);
         if (possibleForThisComp < minAllowed) {
           minAllowed = possibleForThisComp;
@@ -190,7 +206,7 @@ export default function FillingInchargePage() {
     if (shortages.length > 0) {
       setMaxPossiblePcs(minAllowed);
       setStockErrorMsg(
-        `Aap abhi maximum ${minAllowed} Pcs ka order laga sakte hain! (${shortages.join(", ")})`
+        `आप अभी मैक्सिमम ${minAllowed} Pcs का ऑर्डर लगा सकते हैं! (${shortages.join(", ")})`
       );
     }
   };
@@ -267,7 +283,7 @@ export default function FillingInchargePage() {
   };
 
   const handleConfirmReceived = async (reqId: string) => {
-    if (!confirm("Kya aapne Warehouse se aaya hua poora material weight verify karke receive kar liya hai?")) return;
+    if (!confirm("क्या आपने वेयरहाउस से आया हुआ पूरा मटेरियल वेट वेरीफाई करके रिसीव कर लिया है?")) return;
 
     setLoading(true);
     try {
@@ -498,10 +514,11 @@ export default function FillingInchargePage() {
               </div>
             </div>
 
+            {/* LIVE DYNAMIC STOCK CARDS DISPLAY */}
             {productBomPreview.length > 0 && (
               <div className="bg-[#0b0f19] border border-slate-800 p-4 rounded-xl space-y-2">
                 <span className="text-[11px] font-bold text-indigo-400 uppercase tracking-wider block">
-                  📋 Admin BOM & Current Inventory Stock Status (Per Set Preview):
+                  📋 Live Supabase Database Inventory Stock Status:
                 </span>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
                   {productBomPreview.map((comp, idx) => (
@@ -510,8 +527,8 @@ export default function FillingInchargePage() {
                       <div className="text-xs font-mono font-bold text-white mt-0.5">
                         {pcsRequested ? parseInt(pcsRequested || "0") * comp.qty_per_unit : 0} Pcs
                       </div>
-                      <div className="text-[9px] text-emerald-400 mt-1">
-                        Stock: {comp.available_stock} Pcs
+                      <div className="text-[9px] text-emerald-400 font-bold mt-1">
+                        Live Stock: {comp.available_stock} Pcs
                       </div>
                     </div>
                   ))}
@@ -525,7 +542,7 @@ export default function FillingInchargePage() {
                   <span>⚠️ Inventory Warning:</span>
                   <span>{stockErrorMsg}</span>
                 </div>
-                {maxPossiblePcs && (
+                {maxPossiblePcs !== null && (
                   <button
                     type="button"
                     onClick={() => handleQuantityChange(maxPossiblePcs.toString())}
