@@ -67,11 +67,10 @@ export default function ClientPortalPage() {
     setAuthLoading(true);
 
     try {
-      // Fetch all parties to do a flexible match (insensitive)
       const { data, error } = await supabase.from("parties").select("*");
 
       if (error || !data || data.length === 0) {
-        setAuthError("डेटाबेस में कोई पार्टी/क्लाइंट नहीं मिला!");
+        setAuthError("ڈیٹا بیس میں کوئی پارٹی/کلائنٹ نہیں ملا!");
         setAuthLoading(false);
         return;
       }
@@ -85,7 +84,7 @@ export default function ClientPortalPage() {
       );
 
       if (!matchedParty) {
-        setAuthError(`क्लाइंट '${loginCode}' नहीं मिला। कृपया सही नाम या कोड दर्ज करें।`);
+        setAuthError(`کلائنٹ '${loginCode}' نہیں ملا۔ برائے مہربانی صحیح نام یا کوڈ درج کریں۔`);
         setAuthLoading(false);
         return;
       }
@@ -99,7 +98,7 @@ export default function ClientPortalPage() {
       setSession(clientSessionData);
       localStorage.setItem("client_portal_session", JSON.stringify(clientSessionData));
     } catch (err: any) {
-      setAuthError("لگ ان त्रुटि: " + err.message);
+      setAuthError("لاگ ان ایرر: " + err.message);
     } finally {
       setAuthLoading(false);
     }
@@ -155,7 +154,7 @@ export default function ClientPortalPage() {
               CLIENT PORTAL ACCESS
             </span>
             <h1 className="text-xl sm:text-2xl font-extrabold text-white">Warehouse Tracking Login</h1>
-            <p className="text-xs text-slate-400">अपनी Party / Company का नाम दर्ज करें (जैसे: MEXITECH)</p>
+            <p className="text-xs text-slate-400">اپنی Party / Company کا نام درج کریں (مثلاً: MEXITECH)</p>
           </div>
 
           {authError && (
@@ -311,9 +310,9 @@ export default function ClientPortalPage() {
 
         <div className="bg-[#121827] border border-slate-800 p-4 sm:p-6 rounded-2xl shadow-xl space-y-4">
           <h2 className="text-xs sm:text-sm font-bold text-emerald-400 uppercase tracking-wider">
-            {activeTab === "in" && "WAREHOUSE IN RECORDS (कब-कब माल आया)"}
-            {activeTab === "out" && "WAREHOUSE OUT RECORDS (कब-कब माल गया)"}
-            {activeTab === "balance" && "CURRENT STOCK BALANCE (मौजूदा स्टॉक)"}
+            {activeTab === "in" && "WAREHOUSE IN RECORDS"}
+            {activeTab === "out" && "WAREHOUSE OUT RECORDS"}
+            {activeTab === "balance" && "CURRENT STOCK BALANCE"}
           </h2>
 
           <div className="overflow-x-auto">
@@ -340,13 +339,13 @@ export default function ClientPortalPage() {
                   ) : (
                     <tr>
                       <td colSpan={4} className="p-6 text-center text-slate-500">
-                        कोई IN रिकॉर्ड मौजूद नहीं है।
+                        کوئی IN ریکارڈ موجود نہیں ہے۔
                       </td>
                     </tr>
                   ))}
 
                 {activeTab === "out" &&
-                  (filteredOut.logCount > 0 || filteredOut.length > 0 ? (
+                  (filteredOut.length > 0 ? (
                     filteredOut.map((row) => (
                       <tr key={row.id} className="hover:bg-slate-800/50">
                         <td className="p-3 font-bold text-white">{row.product_name || "N/A"}</td>
@@ -358,7 +357,7 @@ export default function ClientPortalPage() {
                   ) : (
                     <tr>
                       <td colSpan={4} className="p-6 text-center text-slate-500">
-                        कोई OUT रिकॉर्ड मौजूद नहीं है।
+                        کوئی OUT ریکارڈ موجود نہیں ہے۔
                       </td>
                     </tr>
                   ))}
@@ -375,7 +374,7 @@ export default function ClientPortalPage() {
                   ) : (
                     <tr>
                       <td colSpan={3} className="p-6 text-center text-slate-500">
-                        कोई स्टॉक बैलेंस उपलब्ध नहीं है।
+                        کوئی اسٹاک بیلنس دستیاب نہیں ہے۔
                       </td>
                     </tr>
                   ))}
