@@ -68,14 +68,6 @@ export default function AdminPage() {
   const [partyWarehouseLogs, setPartyWarehouseLogs] = useState<any[]>([]);
   const [partyInventoryStock, setPartyInventoryStock] = useState<any[]>([]);
 
-  // Filling Incharge Form States (100% Dynamic)
-  const [fillingPartyId, setFillingPartyId] = useState("");
-  const [fillingProductId, setFillingProductId] = useState("");
-  const [batchNo, setBatchNo] = useState("");
-  const [pcsRequested, setPcsRequested] = useState<number>(0);
-  const [availableStockMap, setAvailableStockMap] = useState<{ [key: string]: number }>({});
-  const [fillingComponents, setFillingComponents] = useState<any[]>([]);
-
   const [partyName, setPartyName] = useState("");
   const [partyCode, setPartyCode] = useState("");
   const [selectedPartyForProduct, setSelectedPartyForProduct] = useState("");
@@ -109,15 +101,67 @@ export default function AdminPage() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingBomItem, setEditingBomItem] = useState<ProductBomView | null>(null);
   const [selectedWeightLog, setSelectedWeightLog] = useState<any | null>(null);
+  const [printRequest, setPrintRequest] = useState<any | null>(null);
+  const [printQuantity, setPrintQuantity] = useState("");
 
   const [filterPartyName, setFilterPartyName] = useState("");
   const [filterProductName, setFilterProductName] = useState("");
   const [filterStartDate, setFilterStartDate] = useState("");
   const [filterEndDate, setFilterEndDate] = useState("");
+  const [filterWarehouseAction, setFilterWarehouseAction] = useState<"ALL" | "IN" | "OUT">("ALL");
 
   useEffect(() => {
     fetchMasterData();
   }, []);
+
+  useEffect(() => {
+    const liveChannel = supabase
+      .channel("admin-live-inventory")
+      .on("postgres_changes", { event: "*", schema: "public", table: "inventory_logs" }, async () => {
+        const { data } = await supabase
+          .from("inventory_logs")
+          .select("*")
+          .order("created_at", { ascending: false });
+        if (data) {
+          setWarehouseLogs(data);
+          const selectedPartyName = partiesList.find((party) => party.id === selectedPartyForView)?.name;
+          if (selectedPartyName) {
+            setPartyWarehouseLogs(
+              data.filter((log) => log.party_name?.toLowerCase() === selectedPartyName.toLowerCase())
+            );
+          }
+        }
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "inventory" }, async () => {
+        const { data } = await supabase.from("inventory").select("*");
+        if (data) {
+          setInventoryList(data);
+          if (selectedPartyForView) {
+            setPartyInventoryStock(data.filter((stock) => stock.party_id === selectedPartyForView));
+          }
+        }
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "filling_requests" }, async () => {
+        const { data, error } = await supabase
+          .from("filling_requests")
+          .select("*")
+          .order("created_at", { ascending: false });
+        if (error) {
+          console.error("Failed to refresh filling requests:", error);
+          return;
+        }
+        setFillingLogs(data ?? []);
+      })
+      .subscribe((status, error) => {
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          console.error("Admin realtime subscription issue:", status, error);
+        }
+      });
+
+    return () => {
+      void supabase.removeChannel(liveChannel);
+    };
+  }, [partiesList, selectedPartyForView]);
 
   useEffect(() => {
     if (selectedPartyForView) {
@@ -128,102 +172,147 @@ export default function AdminPage() {
     }
   }, [selectedPartyForView]);
 
-  // 100% Dynamic Stock & BOM Fetching for Filling Incharge
-  useEffect(() => {
-    if (fillingPartyId && fillingProductId) {
-      fetchAvailableStockAndBom(fillingPartyId, fillingProductId);
-    } else {
-      setAvailableStockMap({});
-      setFillingComponents([]);
+  const handlePrintFillingRequest = (request: any, quantityInput: string) => {
+    const quantityValue = Number(quantityInput.trim());
+    if (!Number.isSafeInteger(quantityValue) || quantityValue <= 0) {
+      alert("Please enter a valid quantity greater than zero.");
+      return;
     }
-  }, [fillingPartyId, fillingProductId]);
 
-  const fetchAvailableStockAndBom = async (partyId: string, productId: string) => {
-    try {
-      // Fetch dynamic live stock from inventory_summary table for this party and product
-      const { data: stockData } = await supabase
-        .from("inventory_summary")
-        .select("*")
-        .eq("party_id", partyId)
-        .eq("product_id", productId);
+    const formatPrintDate = (value?: string) => {
+      if (!value) return "—";
+      const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00Z` : value);
+      if (Number.isNaN(date.getTime())) return "—";
+      return new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        year: "2-digit",
+        timeZone: "UTC",
+      })
+        .format(date)
+        .replace(" ", "-")
+        .toUpperCase();
+    };
 
-      const stockMap: { [key: string]: number } = {};
-      if (stockData && stockData.length > 0) {
-        stockData.forEach((item: any) => {
-          // Assuming each row or columns store component quantities
-          const compType = item.component_type || "bottle";
-          stockMap[compType] = item.quantity || item.bottles || item.caps || item.seals || item.boxes || 0;
+    const productBom = bomViewList.filter((item) => item.product_id === request.product_id);
+    const packSizeBom =
+      productBom.find((item) => item.component_type.toLowerCase() === "bottle" && item.ml_capacity > 0) ??
+      productBom.find((item) => item.component_type.toLowerCase() === "tube" && item.ml_capacity > 0) ??
+      productBom.find((item) => item.ml_capacity > 0);
+    const packSize = packSizeBom ? `${packSizeBom.ml_capacity} ML` : "—";
+    const party = partiesList.find((item) => item.id === request.party_id)?.name || request.party_name;
+    const product = productsList.find((item) => item.id === request.product_id)?.product_name || request.product_name;
+    const batchNo = request.batch_no || request.req_code || "—";
+    const quantity = quantityValue.toLocaleString("en-US");
+
+    const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: [150, 297] });
+    pdf.setProperties({ title: `Batch ${batchNo}`, subject: "Batch label" });
+
+    const logoSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="520" height="180" viewBox="0 0 520 180">
+      <text x="5" y="105" fill="#079447" font-family="Arial,sans-serif" font-size="91" font-weight="700" letter-spacing="-5">Nigehban</text>
+      <text x="481" y="44" fill="#555" font-family="Arial,sans-serif" font-size="20">®</text>
+      <path d="M8 119H500" stroke="#888" stroke-width="2"/>
+      <text x="182" y="147" fill="#686868" font-family="Arial,sans-serif" font-size="24" letter-spacing="2">Contract Manufacturing</text>
+      <text x="315" y="173" fill="#686868" font-family="Arial,sans-serif" font-size="19" letter-spacing="2">License #000178</text>
+    </svg>`;
+    const cornerSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="550" height="170" viewBox="0 0 550 170">
+      <path d="M0 0H550V170C390 160 224 99 0 0Z" fill="#0d5933"/>
+      <path d="M0 0H490C371 32 219 76 72 133 48 111 24 79 0 46Z" fill="#e8e8e8"/>
+      <path d="M0 0H425C298 39 183 82 69 139 43 116 20 84 0 52Z" fill="#138b42"/>
+      <path d="M0 0H359C245 43 146 88 63 145 38 122 18 89 0 58Z" fill="#20a64d"/>
+    </svg>`;
+    pdf.advancedAPI(() => {
+      pdf.setCurrentTransformationMatrix(pdf.Matrix(0, 1, -1, 0, 150, 0));
+      pdf.addSvgAsImage(logoSvg, 8, 5, 65, 23);
+      pdf.addSvgAsImage(cornerSvg, 234, 5, 55, 17);
+
+      const pageWidth = 297;
+      const left = 5;
+      const top = 34;
+      const tableWidth = pageWidth - left * 2;
+      const columns = [tableWidth * 0.28, tableWidth * 0.22, tableWidth * 0.18, tableWidth * 0.32];
+      const rowHeight = 12;
+      const signatureHeight = 25.5;
+
+      const drawCell = (
+        x: number,
+        y: number,
+        width: number,
+        height: number,
+        text: string,
+        options: { bold?: boolean; align?: "left" | "center"; inset?: number } = {}
+      ) => {
+        pdf.setDrawColor(0, 0, 0);
+        pdf.setLineWidth(0.9);
+        pdf.rect(x, y, width, height);
+        if (!text) return;
+        pdf.setFont("helvetica", options.bold === false ? "normal" : "bold");
+        const baseFontSize = 18;
+        pdf.setFontSize(baseFontSize);
+        pdf.setTextColor(0, 0, 0);
+        const availableTextWidth = width - 4;
+        const textWidth = pdf.getTextWidth(text);
+        if (textWidth > availableTextWidth) {
+          pdf.setFontSize(Math.max(8, (baseFontSize * availableTextWidth) / textWidth));
+        }
+        const textX =
+          options.align === "center" ? x + width / 2 : x + (options.inset ?? 2);
+        pdf.text(text, textX, y + height / 2, {
+          align: options.align ?? "left",
+          baseline: "middle",
+          maxWidth: availableTextWidth,
         });
-      }
-      setAvailableStockMap(stockMap);
-
-      // Fetch dynamic BOM for this product
-      const { data: bomData } = await supabase
-        .from("product_bom")
-        .select("*")
-        .eq("product_id", productId);
-
-      if (bomData && bomData.length > 0) {
-        const comps = bomData.map((b: any) => ({
-          component_type: b.component_type,
-          weight_10_pcs_grams: b.weight_10_pcs_grams || 0,
-          pcs_requested: 0,
-          theoretical_weight_kg: 0,
-        }));
-        setFillingComponents(comps);
-      } else {
-        setFillingComponents([]);
-      }
-    } catch (err) {
-      console.error("Error fetching stock and BOM:", err);
-    }
-  };
-
-  const handleComponentQtyChange = (index: number, qty: number) => {
-    const updated = [...fillingComponents];
-    updated[index].pcs_requested = qty;
-    const weightPerPc = updated[index].weight_10_pcs_grams / 10;
-    updated[index].theoretical_weight_kg = (qty * weightPerPc) / 1000;
-    setFillingComponents(updated);
-  };
-
-  const handleSaveFillingRequest = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!fillingPartyId || !fillingProductId || !batchNo || pcsRequested <= 0) {
-      return alert("Please fill all required fields properly.");
-    }
-
-    setLoading(true);
-    try {
-      const selectedPartyObj = partiesList.find(p => p.id === fillingPartyId);
-      const selectedProdObj = productsList.find(p => p.id === fillingProductId);
-
-      const payload = {
-        batch_no: batchNo,
-        party_id: fillingPartyId,
-        party_name: selectedPartyObj?.name || "",
-        product_id: fillingProductId,
-        product_name: selectedProdObj?.product_name || "",
-        pcs_requested: pcsRequested,
-        components: fillingComponents,
-        status: "PENDING",
       };
 
-      const { error } = await supabase.from("filling_requests").insert([payload]);
-      if (error) throw error;
+      const label = () => ({ bold: true as const, inset: 1.5, align: "left" as const });
+      const value = () => ({ bold: true as const, inset: 3.5, align: "left" as const });
+      let y = top;
+      drawCell(left, y, columns[0], rowHeight, "COMPANY NAME", label());
+      drawCell(left + columns[0], y, columns[1] + columns[2] + columns[3], rowHeight, party, value());
+      y += rowHeight;
+      drawCell(left, y, columns[0], rowHeight, "PRODUCT NAME", label());
+      drawCell(left + columns[0], y, columns[1] + columns[2] + columns[3], rowHeight, product, value());
+      y += rowHeight;
+      drawCell(left, y, columns[0], rowHeight, "PACK SIZE", label());
+      drawCell(left + columns[0], y, columns[1], rowHeight, packSize, value());
+      drawCell(left + columns[0] + columns[1], y, columns[2], rowHeight, "QUANTITY:", label());
+      drawCell(
+        left + columns[0] + columns[1] + columns[2],
+        y,
+        columns[3],
+        rowHeight,
+        `${quantity} PCS`,
+        { bold: true, align: "center" }
+      );
+      y += rowHeight;
+      drawCell(left, y, columns[0], rowHeight, "BATCH NO", label());
+      drawCell(left + columns[0], y, columns[1] + columns[2] + columns[3], rowHeight, batchNo, value());
+      y += rowHeight;
+      drawCell(left, y, columns[0], rowHeight, "MFG DATE", label());
+      drawCell(left + columns[0], y, columns[1], rowHeight, formatPrintDate(request.mfg_date), value());
+      drawCell(left + columns[0] + columns[1], y, columns[2], rowHeight, "EXPIRY", label());
+      drawCell(
+        left + columns[0] + columns[1] + columns[2],
+        y,
+        columns[3],
+        rowHeight,
+        formatPrintDate(request.exp_date),
+        value()
+      );
+      y += rowHeight;
+      drawCell(left, y, columns[0], signatureHeight, "PACKED BY", label());
+      drawCell(left + columns[0], y, tableWidth - columns[0], signatureHeight * 2, "");
+      y += signatureHeight;
+      drawCell(left, y, columns[0], signatureHeight, "CHECKED BY", label());
+    });
 
-      alert("Filling Request Saved Successfully!");
-      setBatchNo("");
-      setPcsRequested(0);
-      setFillingPartyId("");
-      setFillingProductId("");
-      setFillingComponents([]);
-      fetchMasterData();
-    } catch (err: any) {
-      alert("Error saving filling request: " + err.message);
-    } finally {
-      setLoading(false);
+    pdf.autoPrint({ variant: "javascript" });
+    const pdfWindow = window.open(pdf.output("bloburl"), "_blank");
+    if (!pdfWindow) {
+      alert("Print window was blocked. Please allow pop-ups for this site and try again.");
+      return;
     }
+    setPrintRequest(null);
+    setPrintQuantity("");
   };
 
   const fetchMasterData = async () => {
@@ -249,21 +338,22 @@ export default function AdminPage() {
         }
       }
 
-      const { data: fillingData } = await supabase
+      const { data: fillingData, error: fillingError } = await supabase
         .from("filling_requests")
-        .select("*, products(product_name, parties(name))")
+        .select("*")
         .order("created_at", { ascending: false });
-      if (fillingData) setFillingLogs(fillingData);
+      if (fillingError) throw fillingError;
+      setFillingLogs(fillingData ?? []);
 
       const { data: whData } = await supabase
-        .from("warehouse_logs")
-        .select("*, products(product_name), parties(name)")
+        .from("inventory_logs")
+        .select("*")
         .order("created_at", { ascending: false });
       if (whData) setWarehouseLogs(whData);
 
       const { data: invData } = await supabase
-        .from("inventory_summary")
-        .select("*, products(product_name), parties(name)");
+        .from("inventory")
+        .select("*");
       if (invData) setInventoryList(invData);
 
       const { data: accessData } = await supabase
@@ -280,16 +370,19 @@ export default function AdminPage() {
 
   const fetchAdminPartyViewData = async (partyId: string) => {
     try {
+      const selectedPartyName = partiesList.find((party) => party.id === partyId)?.name;
+      if (!selectedPartyName) return;
+
       const { data: whData } = await supabase
-        .from("warehouse_logs")
-        .select("*, products(product_name)")
-        .eq("party_id", partyId)
+        .from("inventory_logs")
+        .select("*")
+        .eq("party_name", selectedPartyName)
         .order("created_at", { ascending: false });
       if (whData) setPartyWarehouseLogs(whData);
 
       const { data: stockData } = await supabase
-        .from("inventory_summary")
-        .select("*, products(product_name)")
+        .from("inventory")
+        .select("*")
         .eq("party_id", partyId);
       if (stockData) setPartyInventoryStock(stockData);
     } catch (err) {
@@ -588,8 +681,6 @@ export default function AdminPage() {
   };
 
   const availableProductsForBom = productsList.filter((p) => p.party_id === selectedPartyForBom);
-  const availableProductsForFilling = productsList.filter((p) => p.party_id === fillingPartyId);
-
   const filteredParties = partiesList.filter((p) => filterByDateAndText(p.created_at, p.name));
   const filteredProducts = productsList.filter((prod) =>
     filterByDateAndText(prod.created_at, prod.parties?.name, prod.product_name)
@@ -601,10 +692,72 @@ export default function AdminPage() {
     filterByDateAndText(f.created_at, f.party_name, f.product_name)
   );
   const filteredWarehouseLogs = warehouseLogs.filter((w) =>
-    filterByDateAndText(w.created_at, w.parties?.name, w.products?.product_name)
+    (filterWarehouseAction === "ALL" || w.action_type === filterWarehouseAction) &&
+    filterByDateAndText(w.created_at, w.party_name, w.product_name)
   );
-  const filteredInventoryList = inventoryList.filter((i) =>
-    filterByDateAndText(i.created_at, i.parties?.name, i.products?.product_name)
+  const getStockMovementLogs = (stock: { party_name?: string; product_name?: string; component_type?: string }) =>
+    warehouseLogs.filter(
+      (log) =>
+        log.party_name?.toLowerCase() === stock.party_name?.toLowerCase() &&
+        log.product_name?.toLowerCase() === stock.product_name?.toLowerCase() &&
+        log.component_type?.toLowerCase() === stock.component_type?.toLowerCase()
+    );
+  const filteredInventoryList = inventoryList.filter((stock) => {
+    if (!filterByDateAndText(undefined, stock.party_name, stock.product_name)) return false;
+    if (!filterStartDate && !filterEndDate) return true;
+
+    return getStockMovementLogs(stock).some((log) => {
+      const movementDate = new Date(log.created_at).toISOString().split("T")[0];
+      return (!filterStartDate || movementDate >= filterStartDate) &&
+        (!filterEndDate || movementDate <= filterEndDate);
+    });
+  });
+
+  const renderInventoryFilters = (showActionFilter = false) => (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+      <input
+        type="text"
+        value={filterPartyName}
+        onChange={(event) => setFilterPartyName(event.target.value)}
+        placeholder="Filter party"
+        aria-label="Filter by party"
+        className="bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
+      />
+      <input
+        type="text"
+        value={filterProductName}
+        onChange={(event) => setFilterProductName(event.target.value)}
+        placeholder="Filter product"
+        aria-label="Filter by product"
+        className="bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
+      />
+      {showActionFilter && (
+        <select
+          value={filterWarehouseAction}
+          onChange={(event) => setFilterWarehouseAction(event.target.value as "ALL" | "IN" | "OUT")}
+          aria-label="Filter by movement type"
+          className="bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
+        >
+          <option value="ALL">All movements</option>
+          <option value="IN">IN only</option>
+          <option value="OUT">OUT only</option>
+        </select>
+      )}
+      <input
+        type="date"
+        value={filterStartDate}
+        onChange={(event) => setFilterStartDate(event.target.value)}
+        aria-label="Filter from date"
+        className="bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
+      />
+      <input
+        type="date"
+        value={filterEndDate}
+        onChange={(event) => setFilterEndDate(event.target.value)}
+        aria-label="Filter to date"
+        className="bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
+      />
+    </div>
   );
 
   return (
@@ -821,79 +974,18 @@ export default function AdminPage() {
 
         {activeTab === "filling" && (
           <div className="space-y-6">
-            {/* Filling Incharge Entry Form with 100% Dynamic Available Stock */}
-            <form onSubmit={handleSaveFillingRequest} className="bg-[#121827] border border-slate-800 p-6 rounded-xl shadow-lg space-y-4">
-              <h2 className="text-md font-semibold text-amber-400 uppercase">Filling Incharge — New Batch Request</h2>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-xs text-slate-400 mb-1">Select Party / Company</label>
-                  <select value={fillingPartyId} onChange={(e) => { setFillingPartyId(e.target.value); setFillingProductId(""); }} className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg px-3 py-2 text-xs text-white" required>
-                    <option value="">-- Select Party --</option>
-                    {partiesList.map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-400 mb-1">Select Product</label>
-                  <select value={fillingProductId} onChange={(e) => setFillingProductId(e.target.value)} className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg px-3 py-2 text-xs text-white" required disabled={!fillingPartyId}>
-                    <option value="">-- Select Product --</option>
-                    {availableProductsForFilling.map(prod => (<option key={prod.id} value={prod.id}>{prod.product_name}</option>))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-400 mb-1">Batch No & Total Pcs</label>
-                  <div className="flex gap-2">
-                    <input type="text" placeholder="Batch No" value={batchNo} onChange={(e) => setBatchNo(e.target.value)} className="w-1/2 bg-[#0b0f19] border border-slate-800 rounded-lg px-2 py-2 text-xs text-white uppercase font-mono" required />
-                    <input type="number" placeholder="Total Pcs" value={pcsRequested || ""} onChange={(e) => setPcsRequested(Number(e.target.value))} className="w-1/2 bg-[#0b0f19] border border-slate-800 rounded-lg px-2 py-2 text-xs text-amber-300 font-mono" required />
-                  </div>
-                </div>
-              </div>
-
-              {/* 100% Dynamic Components & Live Stock View */}
-              {fillingComponents.length > 0 && (
-                <div className="space-y-2 pt-2">
-                  <label className="text-xs font-semibold text-slate-400 uppercase">Components Breakdown & Live Available Stock:</label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {fillingComponents.map((comp, index) => {
-                      const liveStock = availableStockMap[comp.component_type] || 0;
-                      return (
-                        <div key={index} className="flex items-center justify-between bg-[#0b0f19] p-3 rounded-lg border border-slate-800">
-                          <div>
-                            <span className="text-xs font-bold text-slate-200 capitalize">{comp.component_type.replace("_", " ")}</span>
-                            <span className="text-[10px] text-slate-400 block mt-0.5">
-                              Available Stock: <strong className="text-emerald-400 font-mono">{liveStock} Pcs</strong>
-                            </span>
-                          </div>
-                          <div>
-                            <input
-                              type="number"
-                              placeholder="Required Pcs"
-                              value={comp.pcs_requested || ""}
-                              onChange={(e) => {
-                                const val = parseInt(e.target.value) || 0;
-                                if (val > liveStock) {
-                                  alert(`Warning: Requested quantity (${val}) exceeds available stock (${liveStock})!`);
-                                }
-                                handleComponentQtyChange(index, val);
-                              }}
-                              className="bg-[#121827] border border-slate-700 rounded p-1.5 text-xs text-amber-300 font-mono w-28"
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              <button type="submit" disabled={loading} className="w-full bg-amber-600 hover:bg-amber-700 text-white font-medium py-2.5 rounded-lg text-xs shadow-lg mt-2">Submit Filling Request</button>
-            </form>
-
             <div className="bg-[#121827] border border-slate-800 rounded-xl p-6 shadow-lg space-y-4">
-              <h2 className="text-md font-semibold text-slate-200">Filling Logs & Batch Verification (Live Database)</h2>
+              <h2 className="text-md font-semibold text-slate-200">Filling Incharge Requests (Live)</h2>
               <div className="overflow-x-auto max-h-[500px]">
                 <table className="w-full text-left text-xs text-slate-300">
                   <thead className="bg-[#0b0f19] text-slate-400 uppercase sticky top-0">
-                    <tr><th className="p-3">Batch No</th><th className="p-3">Party</th><th className="p-3">Product</th><th className="p-3 text-center">Req. Pcs</th><th className="p-3 text-right">Actions</th></tr>
+                    <tr>
+                      <th className="p-3">Batch No</th>
+                      <th className="p-3">Party</th>
+                      <th className="p-3">Product</th>
+                      <th className="p-3 text-center">Req. Pcs</th>
+                      <th className="sticky right-0 bg-[#0b0f19] p-3 text-right">Print</th>
+                    </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
                     {filteredFillingLogs.map((req) => (
@@ -902,11 +994,29 @@ export default function AdminPage() {
                         <td className="p-3 font-bold">{req.party_name}</td>
                         <td className="p-3 text-emerald-400">{req.product_name}</td>
                         <td className="p-3 text-center font-mono text-amber-300">{req.pcs_requested}</td>
-                        <td className="p-3 text-right"><button onClick={() => setSelectedWeightLog(req)} className="bg-amber-600/20 hover:bg-amber-600 text-amber-400 hover:text-white px-3 py-1 rounded">View Detail</button></td>
+                        <td className="sticky right-0 whitespace-nowrap bg-[#121827] p-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPrintRequest(req);
+                              setPrintQuantity("");
+                            }}
+                            className="rounded-lg border border-blue-400 bg-blue-600 px-4 py-2 font-bold text-white shadow-md hover:bg-blue-500"
+                          >
+                            🖨 Print Label
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedWeightLog(req)}
+                            className="ml-2 rounded-lg bg-amber-600/20 px-3 py-2 text-amber-300 hover:bg-amber-600 hover:text-white"
+                          >
+                            View Detail
+                          </button>
+                        </td>
                       </tr>
                     ))}
                     {filteredFillingLogs.length === 0 && (
-                      <tr><td colSpan={5} className="p-6 text-center text-slate-500">No live filling logs found in database.</td></tr>
+                      <tr><td colSpan={5} className="p-6 text-center text-slate-500">No requests received from Filling Incharge.</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -918,23 +1028,25 @@ export default function AdminPage() {
         {activeTab === "warehouse" && (
           <div className="bg-[#121827] border border-slate-800 rounded-xl p-6 shadow-lg space-y-4">
             <h2 className="text-md font-semibold text-slate-200">Warehouse Register (Live Database)</h2>
+            {renderInventoryFilters(true)}
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs text-slate-300">
                 <thead className="bg-[#0b0f19] text-slate-400 uppercase">
-                  <tr><th className="p-3">Type</th><th className="p-3">Party</th><th className="p-3">Product</th><th className="p-3">Component</th><th className="p-3">Quantity</th></tr>
+                  <tr><th className="p-3">Type</th><th className="p-3">Party</th><th className="p-3">Product</th><th className="p-3">Component</th><th className="p-3">Quantity</th><th className="p-3">Date &amp; Time</th></tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
                   {filteredWarehouseLogs.map((w) => (
                     <tr key={w.id} className="hover:bg-slate-800/50">
-                      <td className="p-3"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${w.type === "IN" ? "bg-emerald-950 text-emerald-400" : "bg-rose-950 text-rose-400"}`}>{w.type}</span></td>
-                      <td className="p-3 font-semibold">{w.parties?.name || w.party_name}</td>
-                      <td className="p-3 text-emerald-400">{w.products?.product_name || w.product_name}</td>
+                      <td className="p-3"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${w.action_type === "IN" ? "bg-emerald-950 text-emerald-400" : "bg-rose-950 text-rose-400"}`}>{w.action_type}</span></td>
+                      <td className="p-3 font-semibold">{w.party_name}</td>
+                      <td className="p-3 text-emerald-400">{w.product_name}</td>
                       <td className="p-3 capitalize">{w.component_type}</td>
                       <td className="p-3 font-mono font-bold text-amber-300">{w.quantity}</td>
+                      <td className="p-3 whitespace-nowrap text-slate-400">{w.created_at ? new Date(w.created_at).toLocaleString() : "-"}</td>
                     </tr>
                   ))}
                   {filteredWarehouseLogs.length === 0 && (
-                    <tr><td colSpan={5} className="p-6 text-center text-slate-500">No live warehouse logs found.</td></tr>
+                    <tr><td colSpan={6} className="p-6 text-center text-slate-500">No live warehouse logs found.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -945,22 +1057,29 @@ export default function AdminPage() {
         {activeTab === "inventory" && (
           <div className="bg-[#121827] border border-slate-800 p-6 rounded-xl space-y-4">
             <h2 className="text-md font-semibold text-white">Master Inventory Stock Balance (Live Database)</h2>
+            {renderInventoryFilters()}
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs text-slate-300">
                 <thead className="bg-[#0b0f19] text-slate-400 uppercase">
-                  <tr><th className="p-3">Party</th><th className="p-3">Product</th><th className="p-3">Bottles</th><th className="p-3">Caps</th><th className="p-3">Seals</th><th className="p-3">Boxes</th></tr>
+                  <tr><th className="p-3">Party</th><th className="p-3">Product</th><th className="p-3">Component</th><th className="p-3">Quantity</th><th className="p-3">Last IN</th><th className="p-3">Last OUT</th></tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
-                  {filteredInventoryList.map((inv, idx) => (
-                    <tr key={idx} className="hover:bg-slate-800/50">
-                      <td className="p-3 font-semibold">{inv.parties?.name || inv.party_name}</td>
-                      <td className="p-3 text-emerald-400">{inv.products?.product_name || inv.product_name}</td>
-                      <td className="p-3 font-mono">{inv.bottles || 0}</td>
-                      <td className="p-3 font-mono">{inv.caps || 0}</td>
-                      <td className="p-3 font-mono">{inv.seals || 0}</td>
-                      <td className="p-3 font-mono text-amber-300">{inv.boxes || 0}</td>
-                    </tr>
-                  ))}
+                  {filteredInventoryList.map((inv, idx) => {
+                    const movements = getStockMovementLogs(inv);
+                    const lastIn = movements.find((log) => log.action_type === "IN");
+                    const lastOut = movements.find((log) => log.action_type === "OUT");
+
+                    return (
+                      <tr key={inv.id || idx} className="hover:bg-slate-800/50">
+                        <td className="p-3 font-semibold">{inv.party_name}</td>
+                        <td className="p-3 text-emerald-400">{inv.product_name}</td>
+                        <td className="p-3 capitalize">{inv.component_type}</td>
+                        <td className="p-3 font-mono text-amber-300">{inv.quantity || 0}</td>
+                        <td className="p-3 whitespace-nowrap text-slate-400">{lastIn?.created_at ? new Date(lastIn.created_at).toLocaleString() : "-"}</td>
+                        <td className="p-3 whitespace-nowrap text-slate-400">{lastOut?.created_at ? new Date(lastOut.created_at).toLocaleString() : "-"}</td>
+                      </tr>
+                    );
+                  })}
                   {filteredInventoryList.length === 0 && (
                     <tr><td colSpan={6} className="p-6 text-center text-slate-500">No live inventory records found.</td></tr>
                   )}
@@ -1019,21 +1138,19 @@ export default function AdminPage() {
                     <div className="overflow-x-auto">
                       <table className="w-full text-left text-xs text-slate-300">
                         <thead className="bg-[#0b0f19] text-slate-400 uppercase">
-                          <tr><th className="p-2.5">Product Name</th><th className="p-2.5">Bottles</th><th className="p-2.5">Caps</th><th className="p-2.5">Seals</th><th className="p-2.5">Boxes</th></tr>
+                          <tr><th className="p-2.5">Product Name</th><th className="p-2.5">Component</th><th className="p-2.5">Quantity</th></tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800">
                           {partyInventoryStock.length > 0 ? (
                             partyInventoryStock.map((inv: any, i: number) => (
                               <tr key={i}>
-                                <td className="p-2.5 font-bold text-emerald-400">{inv.products?.product_name || inv.product_name}</td>
-                                <td className="p-2.5 font-mono">{inv.bottles || 0}</td>
-                                <td className="p-2.5 font-mono">{inv.caps || 0}</td>
-                                <td className="p-2.5 font-mono">{inv.seals || 0}</td>
-                                <td className="p-2.5 font-mono text-amber-300">{inv.boxes || 0}</td>
+                                <td className="p-2.5 font-bold text-emerald-400">{inv.product_name}</td>
+                                <td className="p-2.5 capitalize">{inv.component_type}</td>
+                                <td className="p-2.5 font-mono text-amber-300">{inv.quantity || 0}</td>
                               </tr>
                             ))
                           ) : (
-                            <tr><td colSpan={5} className="p-4 text-center text-slate-500">No stock found for this party.</td></tr>
+                            <tr><td colSpan={3} className="p-4 text-center text-slate-500">No stock found for this party.</td></tr>
                           )}
                         </tbody>
                       </table>
@@ -1051,8 +1168,8 @@ export default function AdminPage() {
                           {partyWarehouseLogs.length > 0 ? (
                             partyWarehouseLogs.map((w: any) => (
                               <tr key={w.id}>
-                                <td className="p-2.5"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${w.type === "IN" ? "bg-emerald-950 text-emerald-400" : "bg-rose-950 text-rose-400"}`}>{w.type}</span></td>
-                                <td className="p-2.5 text-emerald-400">{w.products?.product_name}</td>
+                                <td className="p-2.5"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${w.action_type === "IN" ? "bg-emerald-950 text-emerald-400" : "bg-rose-950 text-rose-400"}`}>{w.action_type}</span></td>
+                                <td className="p-2.5 text-emerald-400">{w.product_name}</td>
                                 <td className="p-2.5 capitalize">{w.component_type}</td>
                                 <td className="p-2.5 font-mono font-bold text-amber-300">{w.quantity} Pcs</td>
                                 <td className="p-2.5 text-slate-400">{new Date(w.created_at || w.timestamp).toLocaleString()}</td>
@@ -1101,6 +1218,61 @@ export default function AdminPage() {
       </div>
 
       {/* Modals */}
+      {printRequest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              handlePrintFillingRequest(printRequest, printQuantity);
+            }}
+            className="w-full max-w-sm space-y-4 rounded-2xl border border-slate-700 bg-[#121827] p-6 text-slate-100 shadow-2xl"
+          >
+            <div>
+              <h2 className="text-lg font-bold">Print Batch Label</h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Batch {printRequest.batch_no || printRequest.req_code || "—"} · {printRequest.product_name || "Product"}
+              </p>
+            </div>
+            <div>
+              <label htmlFor="print-quantity" className="mb-1 block text-xs text-slate-300">
+                Quantity to print (PCS)
+              </label>
+              <input
+                id="print-quantity"
+                type="number"
+                min="1"
+                step="1"
+                inputMode="numeric"
+                value={printQuantity}
+                onChange={(event) => setPrintQuantity(event.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-[#0b0f19] px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+                placeholder="Enter quantity"
+                required
+                autoFocus
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPrintRequest(null);
+                  setPrintQuantity("");
+                }}
+                className="rounded-lg bg-slate-700 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-600"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-500"
+              >
+                🖨 Print Label
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {selectedWeightLog && (
         <WeightModal isOpen={!!selectedWeightLog} onClose={() => setSelectedWeightLog(null)} log={selectedWeightLog} onSave={handleSaveActualWeightsFromModal} />
       )}

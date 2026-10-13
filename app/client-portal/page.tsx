@@ -56,8 +56,8 @@ export default function ClientPortalPage() {
   }, []);
 
   useEffect(() => {
-    if (session?.party_name) {
-      fetchClientInventoryData(session.party_name);
+    if (session?.party_id && session.party_name) {
+      fetchClientInventoryData(session.party_id, session.party_name);
     }
   }, [session]);
 
@@ -67,24 +67,68 @@ export default function ClientPortalPage() {
     setAuthLoading(true);
 
     try {
-      const { data, error } = await supabase.from("parties").select("*");
+      const username = loginCode.trim();
+      const portalPin = loginPassword.trim();
 
-      if (error || !data || data.length === 0) {
-        setAuthError("ڈیٹا بیس میں کوئی پارٹی/کلائنٹ نہیں ملا!");
+      if (!username || !portalPin) {
+        setAuthError("برائے مہربانی پورٹل Username اور PIN داخل کریں۔");
         setAuthLoading(false);
         return;
       }
 
-      const inputVal = loginCode.trim().toLowerCase();
-      const matchedParty = data.find(
-        (p: any) =>
-          (p.code && p.code.toLowerCase() === inputVal) ||
-          p.name.toLowerCase() === inputVal ||
-          p.id.toLowerCase() === inputVal
-      );
+      let matchedParty: any = null;
+
+      const { data: accessData, error: accessError } = await supabase
+        .from("party_access")
+        .select("*")
+        .eq("username", username)
+        .eq("access_pin", portalPin)
+        .maybeSingle();
+
+      if (accessError) {
+        console.error("party_access lookup failed:", accessError);
+      }
+
+      if (accessData) {
+        if (accessData.is_active === false) {
+          setAuthError("یہ کلائنٹ پورٹل فی الحال غیر فعال ہے۔");
+          setAuthLoading(false);
+          return;
+        }
+
+        const { data: partyData, error: partyError } = await supabase
+          .from("parties")
+          .select("*")
+          .eq("id", accessData.party_id)
+          .maybeSingle();
+
+        if (partyError) {
+          console.error("party lookup failed:", partyError);
+        }
+
+        matchedParty = partyData;
+      }
 
       if (!matchedParty) {
-        setAuthError(`کلائنٹ '${loginCode}' نہیں ملا۔ برائے مہربانی صحیح نام یا کوڈ درج کریں۔`);
+        const { data, error } = await supabase.from("parties").select("*");
+
+        if (error || !data || data.length === 0) {
+          setAuthError("ڈیٹا بیس میں کوئی پارٹی/کلائنٹ نہیں ملا!");
+          setAuthLoading(false);
+          return;
+        }
+
+        const inputVal = username.toLowerCase();
+        matchedParty = data.find(
+          (p: any) =>
+            (p.code && p.code.toLowerCase() === inputVal) ||
+            p.name.toLowerCase() === inputVal ||
+            p.id.toLowerCase() === inputVal
+        );
+      }
+
+      if (!matchedParty) {
+        setAuthError(`کلائنٹ '${username}' نہیں ملا۔ برائے مہربانی صحیح Username یا PIN درج کریں۔`);
         setAuthLoading(false);
         return;
       }
@@ -92,7 +136,7 @@ export default function ClientPortalPage() {
       const clientSessionData: ClientSession = {
         party_id: matchedParty.id,
         party_name: matchedParty.name,
-        client_code: matchedParty.code || loginCode,
+        client_code: matchedParty.code || username,
       };
 
       setSession(clientSessionData);
@@ -111,7 +155,7 @@ export default function ClientPortalPage() {
     setLoginPassword("");
   };
 
-  const fetchClientInventoryData = async (partyName: string) => {
+  const fetchClientInventoryData = async (partyId: string, partyName: string) => {
     setLoading(true);
     try {
       const { data: inData } = await supabase
@@ -135,7 +179,7 @@ export default function ClientPortalPage() {
       const { data: balData } = await supabase
         .from("inventory")
         .select("*")
-        .ilike("party_name", partyName);
+        .eq("party_id", partyId);
 
       if (balData) setBalances(balData);
     } catch (err) {
@@ -154,7 +198,7 @@ export default function ClientPortalPage() {
               CLIENT PORTAL ACCESS
             </span>
             <h1 className="text-xl sm:text-2xl font-extrabold text-white">Warehouse Tracking Login</h1>
-            <p className="text-xs text-slate-400">اپنی Party / Company کا نام درج کریں (مثلاً: MEXITECH)</p>
+            <p className="text-xs text-slate-400">اپنا Portal Username اور PIN درج کریں جو Admin نے دیا ہے</p>
           </div>
 
           {authError && (
@@ -165,25 +209,26 @@ export default function ClientPortalPage() {
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="text-xs text-slate-400 block mb-1">Company / Party Name</label>
+              <label className="text-xs text-slate-400 block mb-1">Portal Username</label>
               <input
                 type="text"
                 value={loginCode}
                 onChange={(e) => setLoginCode(e.target.value)}
-                placeholder="e.g. MEXITECH"
-                className="w-full bg-[#0b0f19] border border-slate-800 rounded-xl p-3 text-xs text-white uppercase focus:border-blue-500 outline-none"
+                placeholder="e.g. mexitech_user"
+                className="w-full bg-[#0b0f19] border border-slate-800 rounded-xl p-3 text-xs text-white focus:border-blue-500 outline-none"
                 required
               />
             </div>
 
             <div>
-              <label className="text-xs text-slate-400 block mb-1">Password (Optional)</label>
+              <label className="text-xs text-slate-400 block mb-1">Portal PIN</label>
               <input
                 type="password"
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
                 placeholder="••••••••"
                 className="w-full bg-[#0b0f19] border border-slate-800 rounded-xl p-3 text-xs text-white focus:border-blue-500 outline-none"
+                required
               />
             </div>
 
@@ -233,7 +278,7 @@ export default function ClientPortalPage() {
         </div>
         <div className="flex gap-2 w-full sm:w-auto">
           <button
-            onClick={() => fetchClientInventoryData(session.party_name)}
+            onClick={() => fetchClientInventoryData(session.party_id, session.party_name)}
             className="flex-1 sm:flex-none px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-md"
           >
             🔄 Refresh Data
@@ -344,7 +389,7 @@ export default function ClientPortalPage() {
                     </tr>
                   ))}
 
-               {activeTab === "out" && (filteredOut.length > 0) ? 
+                {activeTab === "out" &&
                   (filteredOut.length > 0 ? (
                     filteredOut.map((row) => (
                       <tr key={row.id} className="hover:bg-slate-800/50">
@@ -353,7 +398,7 @@ export default function ClientPortalPage() {
                         <td className="p-3 font-mono font-bold text-amber-400">-{row.quantity} Pcs</td>
                         <td className="p-3 text-slate-400">{new Date(row.created_at).toLocaleString()}</td>
                       </tr>
-                    )) 
+                    ))
                   ) : (
                     <tr>
                       <td colSpan={4} className="p-6 text-center text-slate-500">
