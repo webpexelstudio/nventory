@@ -198,7 +198,7 @@ export default function ClientPortalPage() {
               CLIENT PORTAL ACCESS
             </span>
             <h1 className="text-xl sm:text-2xl font-extrabold text-white">Nigheban Warehouse Tracking Login</h1>
-            <p className="text-xs text-slate-400">اپنا Portal Username اور PIN درج کریں جو Admin نے دیا ہے</p>
+            <p className="text-xs text-slate-400"> Enter your Portal Username and PIN  </p>
           </div>
 
           {authError && (
