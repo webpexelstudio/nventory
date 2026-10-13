@@ -197,7 +197,7 @@ export default function ClientPortalPage() {
             <span className="text-xs font-bold text-blue-400 uppercase tracking-widest">
               CLIENT PORTAL ACCESS
             </span>
-            <h1 className="text-xl sm:text-2xl font-extrabold text-white">Warehouse Tracking Login</h1>
+            <h1 className="text-xl sm:text-2xl font-extrabold text-white">Nigheban Warehouse Tracking Login</h1>
             <p className="text-xs text-slate-400">اپنا Portal Username اور PIN درج کریں جو Admin نے دیا ہے</p>
           </div>
 
@@ -273,7 +273,7 @@ export default function ClientPortalPage() {
             CLIENT PORTAL — {session.party_name}
           </span>
           <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1">
-            Warehouse & Inventory Tracking
+            Nigheban Warehouse & Inventory Tracking
           </h1>
         </div>
         <div className="flex gap-2 w-full sm:w-auto">
