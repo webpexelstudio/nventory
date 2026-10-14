@@ -22,6 +22,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html lang="en" suppressHydrationWarning>
       <body className="min-h-full flex flex-col" suppressHydrationWarning>
         {children}
+        <div className="fixed bottom-4 right-4 z-40 rounded-full border border-cyan-400/30 bg-slate-950/80 px-4 py-2 text-[10px] font-semibold tracking-[0.18em] text-cyan-300 shadow-lg shadow-cyan-950/30 backdrop-blur-md select-none">
+          PROVIDER WEBPEXELSTUDIO
+        </div>
       </body>
     </html>
   );

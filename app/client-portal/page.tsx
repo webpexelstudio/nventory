@@ -16,6 +16,7 @@ interface InventoryLog {
   product_name?: string;
   component_type: string;
   quantity: number;
+  remarks?: string;
   created_at: string;
 }
 
@@ -40,9 +41,17 @@ export default function ClientPortalPage() {
   const [outLogs, setOutLogs] = useState<InventoryLog[]>([]);
   const [balances, setBalances] = useState<StockBalance[]>([]);
 
-  const [filterProduct, setFilterProduct] = useState("");
-  const [filterStartDate, setFilterStartDate] = useState("");
-  const [filterEndDate, setFilterEndDate] = useState("");
+  const [productOptions, setProductOptions] = useState<string[]>([]);
+
+  const [inFilterProduct, setInFilterProduct] = useState("");
+  const [inFilterStartDate, setInFilterStartDate] = useState("");
+  const [inFilterEndDate, setInFilterEndDate] = useState("");
+
+  const [outFilterProduct, setOutFilterProduct] = useState("");
+  const [outFilterStartDate, setOutFilterStartDate] = useState("");
+  const [outFilterEndDate, setOutFilterEndDate] = useState("");
+
+  const [balanceFilterProduct, setBalanceFilterProduct] = useState("");
 
   useEffect(() => {
     const savedSession = localStorage.getItem("client_portal_session");
@@ -182,6 +191,23 @@ export default function ClientPortalPage() {
         .eq("party_id", partyId);
 
       if (balData) setBalances(balData);
+
+      const { data: productData } = await supabase
+        .from("products")
+        .select("product_name")
+        .eq("party_id", partyId)
+        .order("product_name");
+
+      const uniqueProducts = Array.from(
+        new Set([
+          ...(productData || []).map((item: any) => item.product_name).filter(Boolean),
+          ...(inData || []).map((item: any) => item.product_name).filter(Boolean),
+          ...(outData || []).map((item: any) => item.product_name).filter(Boolean),
+          ...(balData || []).map((item: any) => item.product_name).filter(Boolean),
+        ])
+      ) as string[];
+
+      setProductOptions(uniqueProducts);
     } catch (err) {
       console.error(err);
     } finally {
@@ -197,7 +223,7 @@ export default function ClientPortalPage() {
             <span className="text-xs font-bold text-blue-400 uppercase tracking-widest">
               CLIENT PORTAL ACCESS
             </span>
-            <h1 className="text-xl sm:text-2xl font-extrabold text-white">Nigheban Warehouse Tracking Login</h1>
+            <h1 className="text-xl sm:text-2xl font-extrabold text-white">Nigehban Warehouse Tracking Login</h1>
             <p className="text-xs text-slate-400"> Enter your Portal Username and PIN  </p>
           </div>
 
@@ -245,24 +271,24 @@ export default function ClientPortalPage() {
     );
   }
 
-  const applyFilters = (items: any[]) => {
+  const applyFilters = (items: any[], productFilter: string, startDate: string, endDate: string) => {
     return items.filter((item) => {
-      if (filterProduct && item.product_name && !item.product_name.toLowerCase().includes(filterProduct.toLowerCase())) {
+      if (productFilter && item.product_name && !item.product_name.toLowerCase().includes(productFilter.toLowerCase())) {
         return false;
       }
       if (item.created_at) {
         const itemDate = new Date(item.created_at).toISOString().split("T")[0];
-        if (filterStartDate && itemDate < filterStartDate) return false;
-        if (filterEndDate && itemDate > filterEndDate) return false;
+        if (startDate && itemDate < startDate) return false;
+        if (endDate && itemDate > endDate) return false;
       }
       return true;
     });
   };
 
-  const filteredIn = applyFilters(inLogs);
-  const filteredOut = applyFilters(outLogs);
+  const filteredIn = applyFilters(inLogs, inFilterProduct, inFilterStartDate, inFilterEndDate);
+  const filteredOut = applyFilters(outLogs, outFilterProduct, outFilterStartDate, outFilterEndDate);
   const filteredBal = balances.filter((b) =>
-    filterProduct ? b.product_name?.toLowerCase().includes(filterProduct.toLowerCase()) : true
+    balanceFilterProduct ? b.product_name?.toLowerCase().includes(balanceFilterProduct.toLowerCase()) : true
   );
 
   return (
@@ -273,7 +299,7 @@ export default function ClientPortalPage() {
             CLIENT PORTAL — {session.party_name}
           </span>
           <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1">
-            Nigheban Warehouse & Inventory Tracking
+            Nigehban Warehouse & Inventory Tracking
           </h1>
         </div>
         <div className="flex gap-2 w-full sm:w-auto">
@@ -320,38 +346,105 @@ export default function ClientPortalPage() {
           </button>
         </div>
 
-        <div className="bg-[#121827] border border-slate-800 p-3 sm:p-4 rounded-xl grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div>
-            <label className="text-[10px] text-slate-400 block mb-1">Filter by Product Name</label>
-            <input
-              type="text"
-              placeholder="Search product..."
-              value={filterProduct}
-              onChange={(e) => setFilterProduct(e.target.value)}
-              className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
-            />
-          </div>
+        {activeTab === "in" && (
+          <div className="bg-[#121827] border border-slate-800 p-3 sm:p-4 rounded-xl grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-1">Filter by Product Name</label>
+              <select
+                value={inFilterProduct}
+                onChange={(e) => setInFilterProduct(e.target.value)}
+                className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+              >
+                <option value="">All Products</option>
+                {productOptions.map((product) => (
+                  <option key={product} value={product}>
+                    {product}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          <div>
-            <label className="text-[10px] text-slate-400 block mb-1">From Date</label>
-            <input
-              type="date"
-              value={filterStartDate}
-              onChange={(e) => setFilterStartDate(e.target.value)}
-              className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
-            />
-          </div>
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-1">From Date</label>
+              <input
+                type="date"
+                value={inFilterStartDate}
+                onChange={(e) => setInFilterStartDate(e.target.value)}
+                className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+              />
+            </div>
 
-          <div>
-            <label className="text-[10px] text-slate-400 block mb-1">To Date</label>
-            <input
-              type="date"
-              value={filterEndDate}
-              onChange={(e) => setFilterEndDate(e.target.value)}
-              className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
-            />
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-1">To Date</label>
+              <input
+                type="date"
+                value={inFilterEndDate}
+                onChange={(e) => setInFilterEndDate(e.target.value)}
+                className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+              />
+            </div>
           </div>
-        </div>
+        )}
+
+        {activeTab === "out" && (
+          <div className="bg-[#121827] border border-slate-800 p-3 sm:p-4 rounded-xl grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-1">Filter by Product Name</label>
+              <select
+                value={outFilterProduct}
+                onChange={(e) => setOutFilterProduct(e.target.value)}
+                className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+              >
+                <option value="">All Products</option>
+                {productOptions.map((product) => (
+                  <option key={product} value={product}>
+                    {product}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-1">From Date</label>
+              <input
+                type="date"
+                value={outFilterStartDate}
+                onChange={(e) => setOutFilterStartDate(e.target.value)}
+                className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+              />
+            </div>
+
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-1">To Date</label>
+              <input
+                type="date"
+                value={outFilterEndDate}
+                onChange={(e) => setOutFilterEndDate(e.target.value)}
+                className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+              />
+            </div>
+          </div>
+        )}
+
+        {activeTab === "balance" && (
+          <div className="bg-[#121827] border border-slate-800 p-3 sm:p-4 rounded-xl grid grid-cols-1 sm:grid-cols-1 gap-3 max-w-md">
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-1">Filter by Product Name</label>
+              <select
+                value={balanceFilterProduct}
+                onChange={(e) => setBalanceFilterProduct(e.target.value)}
+                className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+              >
+                <option value="">All Products</option>
+                {productOptions.map((product) => (
+                  <option key={product} value={product}>
+                    {product}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
 
         <div className="bg-[#121827] border border-slate-800 p-4 sm:p-6 rounded-2xl shadow-xl space-y-4">
           <h2 className="text-xs sm:text-sm font-bold text-emerald-400 uppercase tracking-wider">
@@ -367,6 +460,7 @@ export default function ClientPortalPage() {
                   <th className="p-3">Product Name</th>
                   <th className="p-3">Item / Component Name</th>
                   <th className="p-3">Quantity</th>
+                  {activeTab !== "balance" && <th className="p-3">Remarks</th>}
                   {activeTab !== "balance" && <th className="p-3">Date & Time</th>}
                 </tr>
               </thead>
@@ -378,13 +472,14 @@ export default function ClientPortalPage() {
                         <td className="p-3 font-bold text-white">{row.product_name || "N/A"}</td>
                         <td className="p-3 capitalize text-indigo-300">{row.component_type}</td>
                         <td className="p-3 font-mono font-bold text-emerald-400">+{row.quantity} Pcs</td>
+                        <td className="p-3 text-slate-300">{row.remarks || "—"}</td>
                         <td className="p-3 text-slate-400">{new Date(row.created_at).toLocaleString()}</td>
                       </tr>
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={4} className="p-6 text-center text-slate-500">
-                        کوئی IN ریکارڈ موجود نہیں ہے۔
+                      <td colSpan={5} className="p-6 text-center text-slate-500">
+                        No IN record found
                       </td>
                     </tr>
                   ))}
@@ -396,13 +491,14 @@ export default function ClientPortalPage() {
                         <td className="p-3 font-bold text-white">{row.product_name || "N/A"}</td>
                         <td className="p-3 capitalize text-indigo-300">{row.component_type}</td>
                         <td className="p-3 font-mono font-bold text-amber-400">-{row.quantity} Pcs</td>
+                        <td className="p-3 text-slate-300">{row.remarks || "—"}</td>
                         <td className="p-3 text-slate-400">{new Date(row.created_at).toLocaleString()}</td>
                       </tr>
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={4} className="p-6 text-center text-slate-500">
-                        کوئی OUT ریکارڈ موجود نہیں ہے۔
+                      <td colSpan={5} className="p-6 text-center text-slate-500">
+                        No OUT record found
                       </td>
                     </tr>
                   ))}
@@ -419,7 +515,7 @@ export default function ClientPortalPage() {
                   ) : (
                     <tr>
                       <td colSpan={3} className="p-6 text-center text-slate-500">
-                        کوئی اسٹاک بیلنس دستیاب نہیں ہے۔
+                        Out of stock
                       </td>
                     </tr>
                   ))}

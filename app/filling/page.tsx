@@ -283,7 +283,7 @@ export default function FillingInchargePage() {
   };
 
   const handleConfirmReceived = async (reqId: string) => {
-    if (!confirm("क्या आपने वेयरहाउस से आया हुआ पूरा मटेरियल वेट वेरीफाई करके रिसीव कर लिया है?")) return;
+    if (!confirm("Have you verified the weight of the entire material received from the warehouse?")) return;
 
     setLoading(true);
     try {

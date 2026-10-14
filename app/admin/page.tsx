@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
@@ -33,6 +34,7 @@ interface ProductBomView {
   product_id: string;
   component_type: string;
   ml_capacity: number;
+  capacity_unit?: "ML" | "GM";
   weight_10_pcs_grams: number;
   created_at?: string;
   products?: {
@@ -40,6 +42,13 @@ interface ProductBomView {
     product_name: string;
     parties?: { id: string; name: string; code: string };
   };
+}
+
+interface AssemblingRow {
+  component_type: string;
+  ml_capacity: string;
+  capacity_unit: "ML" | "GM";
+  weight_10_pcs_grams: string;
 }
 
 export default function AdminPage() {
@@ -93,8 +102,8 @@ export default function AdminPage() {
   const [newTypeName, setNewTypeName] = useState("");
   const [showAddTypeModal, setShowAddTypeModal] = useState(false);
 
-  const [assemblingRows, setAssemblingRows] = useState<any[]>([
-    { component_type: "bottle", ml_capacity: "500", weight_10_pcs_grams: "122" },
+  const [assemblingRows, setAssemblingRows] = useState<AssemblingRow[]>([
+    { component_type: "bottle", ml_capacity: "500", capacity_unit: "ML", weight_10_pcs_grams: "122" },
   ]);
 
   const [editingParty, setEditingParty] = useState<Party | null>(null);
@@ -198,7 +207,9 @@ export default function AdminPage() {
       productBom.find((item) => item.component_type.toLowerCase() === "bottle" && item.ml_capacity > 0) ??
       productBom.find((item) => item.component_type.toLowerCase() === "tube" && item.ml_capacity > 0) ??
       productBom.find((item) => item.ml_capacity > 0);
-    const packSize = packSizeBom ? `${packSizeBom.ml_capacity} ML` : "—";
+    const packSize = packSizeBom
+      ? `${packSizeBom.ml_capacity} ${packSizeBom.capacity_unit || "ML"}`
+      : "—";
     const party = partiesList.find((item) => item.id === request.party_id)?.name || request.party_name;
     const product = productsList.find((item) => item.id === request.product_id)?.product_name || request.product_name;
     const batchNo = request.batch_no || request.req_code || "—";
@@ -516,7 +527,7 @@ export default function AdminPage() {
   const handleAddAssemblingRow = () => {
     setAssemblingRows([
       ...assemblingRows,
-      { component_type: componentTypes[0] || "bottle", ml_capacity: "", weight_10_pcs_grams: "" },
+      { component_type: componentTypes[0] || "bottle", ml_capacity: "", capacity_unit: "ML", weight_10_pcs_grams: "" },
     ]);
   };
 
@@ -526,9 +537,9 @@ export default function AdminPage() {
     setAssemblingRows(list);
   };
 
-  const handleRowChange = (index: number, field: string, value: string) => {
+  const handleRowChange = <K extends keyof AssemblingRow,>(index: number, field: K, value: AssemblingRow[K]) => {
     const updated = [...assemblingRows];
-    updated[index][field] = value;
+    updated[index] = { ...updated[index], [field]: value };
     setAssemblingRows(updated);
   };
 
@@ -559,6 +570,7 @@ export default function AdminPage() {
         product_id: selectedProductForBom,
         component_type: row.component_type,
         ml_capacity: row.ml_capacity ? parseFloat(row.ml_capacity) : 0,
+        capacity_unit: row.capacity_unit || "ML",
         weight_10_pcs_grams: row.weight_10_pcs_grams ? parseFloat(row.weight_10_pcs_grams) : 0,
       }));
 
@@ -568,7 +580,7 @@ export default function AdminPage() {
       alert("Assembling Setup Record Saved Successfully!");
       setSelectedPartyForBom("");
       setSelectedProductForBom("");
-      setAssemblingRows([{ component_type: "bottle", ml_capacity: "500", weight_10_pcs_grams: "122" }]);
+      setAssemblingRows([{ component_type: "bottle", ml_capacity: "500", capacity_unit: "ML", weight_10_pcs_grams: "122" }]);
       fetchMasterData();
     } catch (err: any) {
       alert("Save Error: " + err.message);
@@ -587,6 +599,7 @@ export default function AdminPage() {
         .update({
           component_type: editingBomItem.component_type,
           ml_capacity: editingBomItem.ml_capacity,
+          capacity_unit: editingBomItem.capacity_unit || "ML",
           weight_10_pcs_grams: editingBomItem.weight_10_pcs_grams,
         })
         .eq("id", editingBomItem.id);
@@ -771,6 +784,13 @@ export default function AdminPage() {
           <h1 className="text-2xl font-extrabold text-white mt-1">WMS Master & Monitoring Portal</h1>
         </div>
 
+        <Link
+          href="/transportation-rent"
+          className="rounded-lg border border-cyan-700 bg-cyan-950/50 px-4 py-2 text-xs font-bold text-cyan-300 hover:bg-cyan-900/60"
+        >
+          Transportation Rent & Payments
+        </Link>
+
         <div className="flex flex-wrap gap-1.5 bg-[#121827] p-1.5 rounded-xl border border-slate-800 text-xs">
           <button onClick={() => setActiveTab("setup")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "setup" ? "bg-purple-700 text-white" : "text-slate-400 hover:text-white"}`}>+ Add Master</button>
           <button onClick={() => setActiveTab("parties")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "parties" ? "bg-purple-700 text-white" : "text-slate-400 hover:text-white"}`}>Parties ({partiesList.length})</button>
@@ -878,8 +898,14 @@ export default function AdminPage() {
                       </select>
                     </div>
                     <div className="flex-1 w-full">
-                      <label className="block text-[10px] text-slate-500 mb-1">Fill Capacity (ML)</label>
-                      <input type="number" step="0.01" value={row.ml_capacity} onChange={(e) => handleRowChange(index, "ml_capacity", e.target.value)} placeholder="e.g. 500" className="w-full bg-[#121827] border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200" />
+                      <label className="block text-[10px] text-slate-500 mb-1">Fill Capacity</label>
+                      <div className="flex gap-2">
+                        <input type="number" step="0.01" value={row.ml_capacity} onChange={(e) => handleRowChange(index, "ml_capacity", e.target.value)} placeholder="e.g. 500" className="min-w-0 flex-1 bg-[#121827] border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200" />
+                        <select value={row.capacity_unit} onChange={(e) => handleRowChange(index, "capacity_unit", e.target.value === "GM" ? "GM" : "ML")} className="bg-[#121827] border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200" aria-label="Fill capacity unit">
+                          <option value="ML">ML</option>
+                          <option value="GM">GM</option>
+                        </select>
+                      </div>
                     </div>
                     <div className="flex-1 w-full">
                       <label className="block text-[10px] text-slate-500 mb-1">Weight for 10 Pcs (Grams)</label>
@@ -958,7 +984,7 @@ export default function AdminPage() {
                       <td className="p-3 font-semibold text-emerald-400">{bom.products?.parties?.name}</td>
                       <td className="p-3 font-semibold text-slate-200">{bom.products?.product_name}</td>
                       <td className="p-3 capitalize font-bold text-amber-400">{bom.component_type.replace("_", " ")}</td>
-                      <td className="p-3 font-mono">{bom.ml_capacity ? `${bom.ml_capacity} ml` : "-"}</td>
+                      <td className="p-3 font-mono">{bom.ml_capacity ? `${bom.ml_capacity} ${bom.capacity_unit || "ML"}` : "-"}</td>
                       <td className="p-3 font-mono font-bold text-amber-300">{bom.weight_10_pcs_grams} g</td>
                       <td className="p-3 text-right">
                         <button onClick={() => setEditingBomItem(bom)} className="text-blue-400 mr-3 px-2 py-1 bg-blue-900/30 rounded">Edit</button>
@@ -1327,7 +1353,14 @@ export default function AdminPage() {
             <select value={editingBomItem.component_type} onChange={(e) => setEditingBomItem({ ...editingBomItem, component_type: e.target.value })} className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-white capitalize" required>
               {componentTypes.map((type) => (<option key={type} value={type}>{type.replace("_", " ")}</option>))}
             </select>
-            <input type="number" value={editingBomItem.ml_capacity} onChange={(e) => setEditingBomItem({ ...editingBomItem, ml_capacity: Number(e.target.value) })} className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-white" placeholder="ML Capacity" />
+            <label className="block text-xs text-slate-400">Fill Capacity</label>
+            <div className="flex gap-2">
+              <input type="number" value={editingBomItem.ml_capacity} onChange={(e) => setEditingBomItem({ ...editingBomItem, ml_capacity: Number(e.target.value) })} className="min-w-0 flex-1 bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-white" placeholder="Fill Capacity" />
+              <select value={editingBomItem.capacity_unit || "ML"} onChange={(e) => setEditingBomItem({ ...editingBomItem, capacity_unit: e.target.value === "GM" ? "GM" : "ML" })} className="bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-white" aria-label="Fill capacity unit">
+                <option value="ML">ML</option>
+                <option value="GM">GM</option>
+              </select>
+            </div>
             <input type="number" value={editingBomItem.weight_10_pcs_grams} onChange={(e) => setEditingBomItem({ ...editingBomItem, weight_10_pcs_grams: Number(e.target.value) })} className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-amber-300 font-mono" placeholder="Weight for 10 Pcs" />
             <div className="flex gap-2 pt-2">
               <button type="button" onClick={() => setEditingBomItem(null)} className="w-1/2 bg-slate-800 py-2 rounded-xl text-xs font-bold">Cancel</button>

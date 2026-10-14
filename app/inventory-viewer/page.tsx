@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import TransportationRentPanel from "@/components/TransportationRentPanel";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
@@ -46,7 +47,7 @@ interface StockBalance {
 }
 
 export default function WarehouseStaffPortal() {
-  const [activeTab, setActiveTab] = useState<"balance" | "stock_in" | "stock_out">("balance");
+  const [activeTab, setActiveTab] = useState<"balance" | "stock_in" | "stock_out" | "transportation_rent">("balance");
   const [loading, setLoading] = useState(false);
 
   // Master Data
@@ -297,6 +298,14 @@ export default function WarehouseStaffPortal() {
             }`}
           >
             📤 Stock OUT History
+          </button>
+          <button
+            onClick={() => setActiveTab("transportation_rent")}
+            className={`px-4 py-2.5 rounded-xl text-xs font-bold transition whitespace-nowrap shrink-0 ${
+              activeTab === "transportation_rent" ? "bg-emerald-600 text-white shadow-lg" : "bg-[#121827] text-slate-400 hover:text-white"
+            }`}
+          >
+            🚚 Transportation Rent (View)
           </button>
         </div>
 
@@ -709,6 +718,7 @@ export default function WarehouseStaffPortal() {
             </div>
           </div>
         )}
+        {activeTab === "transportation_rent" && <TransportationRentPanel mode="viewer" />}
       </div>
     </div>
   );
