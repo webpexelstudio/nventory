@@ -514,7 +514,10 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
 
   const exportTransportationPdf = () => {
     const summaryRows = Math.max(1, Math.ceil(driverPendingSummaries.length / 3));
-    const pageHeight = Math.max(320, 120 + summaryRows * 26 + visibleRents.length * 8);
+    const pageHeight = Math.max(
+      320,
+      180 + summaryRows * 26 + visibleRents.length * 8 + driverRentGroups.length * 32
+    );
     const doc = new jsPDF({ unit: "mm", format: [297, pageHeight] });
     const reportStatus = mode === "admin" ? activeTab.toUpperCase() : "ALL";
     doc.setFontSize(16);
@@ -581,25 +584,49 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
     doc.setTextColor(71, 85, 105);
     doc.text(`${visibleRents.length} rent records`, 279, totalCardY + 12, { align: "right" });
 
-    const detailsTitleY = totalCardY + 29;
+    let detailsTitleY = totalCardY + 29;
+    if (detailsTitleY > pageHeight - 20) {
+      doc.addPage();
+      detailsTitleY = 16;
+    }
     doc.setTextColor(0, 0, 0);
     doc.setFontSize(12);
     doc.setFont("helvetica", "bold");
     doc.text(`RENT DETAILS - ${reportStatus}`, 14, detailsTitleY);
-    autoTable(doc, {
-      startY: detailsTitleY + 5,
-      head: [["Date", "Driver", "Vehicle", "Amount (PKR)", "Company / Trip Details", "Status"]],
-      body: visibleRents.map((rent) => [
-        formatDate(rent.rent_date),
-        rent.driver,
-        rent.vehicle || "—",
-        Number(rent.amount).toLocaleString("en-PK", { maximumFractionDigits: 2 }),
-        rent.company,
-        rent.payment_status.toUpperCase(),
-      ]),
-      theme: "grid",
-      headStyles: { fillColor: [8, 145, 178] },
-      styles: { fontSize: 8, fontStyle: "bold", cellPadding: 1.5, minCellHeight: 7, overflow: "ellipsize" },
+    let detailsY = detailsTitleY + 8;
+    driverRentGroups.forEach((group) => {
+      const driverTotal = group.rents.reduce((total, rent) => total + Number(rent.amount), 0);
+      if (detailsY > pageHeight - 30) {
+        doc.addPage();
+        detailsY = 16;
+      }
+
+      autoTable(doc, {
+        startY: detailsY,
+        head: [
+          [{
+            content: `DRIVER: ${group.name}  |  ${group.rents.length} RENTS  |  TOTAL: ${formatAmount(driverTotal)}`,
+            colSpan: 5,
+            styles: { fillColor: [236, 254, 255], textColor: [8, 80, 105], fontSize: 10, halign: "left" },
+          }],
+          ["Date", "Vehicle", "Amount (PKR)", "Company / Trip Details", "Status"],
+        ],
+        body: group.rents.map((rent) => [
+          formatDate(rent.rent_date),
+          rent.vehicle || "—",
+          Number(rent.amount).toLocaleString("en-PK", { maximumFractionDigits: 2 }),
+          rent.company,
+          rent.payment_status.toUpperCase(),
+        ]),
+        foot: [["", "DRIVER TOTAL", driverTotal.toLocaleString("en-PK", { maximumFractionDigits: 2 }), "", ""]],
+        theme: "grid",
+        tableLineWidth: 0.6,
+        tableLineColor: [8, 80, 105],
+        headStyles: { fillColor: [8, 145, 178], textColor: [255, 255, 255] },
+        footStyles: { fillColor: [236, 254, 255], textColor: [8, 80, 105], fontStyle: "bold" },
+        styles: { fontSize: 8, fontStyle: "bold", cellPadding: 1.5, minCellHeight: 7, overflow: "ellipsize" },
+      });
+      detailsY += group.rents.length * 8 + 32;
     });
 
     const suffix = mode === "admin" ? activeTab : "all";

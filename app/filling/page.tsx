@@ -212,7 +212,7 @@ export default function FillingInchargePage() {
       const requiredTotal = qty * comp.qty_per_unit;
       if (comp.available_stock < requiredTotal) {
         const diff = requiredTotal - comp.available_stock;
-        shortages.push(`${diff} Pcs ${comp.component_type}s कम हैं`);
+        shortages.push(`${diff} Pcs ${comp.component_type.toUpperCase()}s कम हैं`);
         const possibleForThisComp = Math.floor(comp.available_stock / comp.qty_per_unit);
         if (possibleForThisComp < minAllowed) {
           minAllowed = possibleForThisComp;
@@ -568,7 +568,7 @@ export default function FillingInchargePage() {
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
                   {productBomPreview.map((comp, idx) => (
                     <div key={idx} className="bg-[#121827] border border-slate-800/80 p-2.5 rounded-lg text-center">
-                      <div className="text-[10px] text-slate-400 capitalize">{comp.component_type}</div>
+                      <div className="text-[10px] text-slate-400 uppercase">{comp.component_type}</div>
                       <div className="text-xs font-mono font-bold text-white mt-0.5">
                         {pcsRequested ? parseInt(pcsRequested || "0") * comp.qty_per_unit : 0} Pcs
                       </div>
@@ -868,7 +868,7 @@ function WeightVerificationModal({
 
                   return (
                     <tr key={idx} className="hover:bg-slate-800/50">
-                      <td className="p-3 font-bold text-white capitalize">{c.component_type}</td>
+                      <td className="p-3 font-bold text-white uppercase">{c.component_type}</td>
                       <td className="p-3 font-mono text-slate-400 whitespace-nowrap">{c.weight_10_pcs_grams || 0}g</td>
                       <td className="p-3 font-mono font-bold text-indigo-300 whitespace-nowrap">
                         {(c.theoretical_weight_kg || 0).toFixed(2)} Kg

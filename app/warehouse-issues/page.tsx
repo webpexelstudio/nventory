@@ -78,6 +78,16 @@ interface StockBalance {
   quantity: number;
 }
 
+interface ProductBomCapacity {
+  component_type: string;
+  ml_capacity: number | null;
+  capacity_unit: "ML" | "GM" | null;
+  products?: {
+    product_name: string;
+    parties?: { name: string }[] | null;
+  }[] | null;
+}
+
 export default function WarehousePortalPage() {
   const [activeTab, setActiveTab] = useState<"requests" | "stock_in" | "stock_out" | "balance">("requests");
   const [loading, setLoading] = useState(false);
@@ -90,6 +100,7 @@ export default function WarehousePortalPage() {
   const [requestsList, setRequestsList] = useState<FillingRequest[]>([]);
   const [inOutLogs, setInOutLogs] = useState<InventoryLog[]>([]);
   const [stockBalances, setStockBalances] = useState<StockBalance[]>([]);
+  const [productBomCapacities, setProductBomCapacities] = useState<ProductBomCapacity[]>([]);
 
   // 100% Dynamic Component Types from Database BOM
   const [dynamicComponentTypes, setDynamicComponentTypes] = useState<string[]>([
@@ -162,8 +173,12 @@ export default function WarehousePortalPage() {
       if (stockData) setStockBalances(stockData);
 
       // Fetch dynamic component types from product_bom table
-      const { data: bomTypesData } = await supabase.from("product_bom").select("component_type");
+      const { data: bomTypesData, error: bomTypesError } = await supabase
+        .from("product_bom")
+        .select("component_type, ml_capacity, capacity_unit, products(product_name, parties(name))");
+      if (bomTypesError) throw bomTypesError;
       if (bomTypesData && bomTypesData.length > 0) {
+        setProductBomCapacities(bomTypesData);
         const uniqueTypes = Array.from(new Set(bomTypesData.map((b: any) => b.component_type).filter(Boolean)));
         if (uniqueTypes.length > 0) {
           setDynamicComponentTypes(uniqueTypes as string[]);
@@ -186,7 +201,12 @@ export default function WarehousePortalPage() {
   const filteredProductsForBal = productsList.filter((p) => p.party_id === balPartyId);
 
   const exportExcel = (data: any[], fileName: string) => {
-    const worksheet = XLSX.utils.json_to_sheet(data);
+    const exportData = data.map((row) =>
+      typeof row.component_type === "string"
+        ? { ...row, component_type: row.component_type.toUpperCase() }
+        : row
+    );
+    const worksheet = XLSX.utils.json_to_sheet(exportData);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
     XLSX.writeFile(workbook, `${fileName}_${new Date().toISOString().split("T")[0]}.xlsx`);
@@ -483,6 +503,25 @@ export default function WarehousePortalPage() {
     }
     return true;
   });
+  const formatStockInComponent = (log: InventoryLog) => {
+    const componentType = log.component_type.trim().toLowerCase();
+    if (!["bottle", "tube", "jar"].includes(componentType)) return log.component_type.toUpperCase();
+
+    const matchingBom = productBomCapacities.find(
+      (bom) =>
+        bom.component_type.trim().toLowerCase() === componentType &&
+        bom.products?.some(
+          (product) =>
+            product.product_name.toLowerCase() === log.product_name?.toLowerCase() &&
+            product.parties?.some((party) => party.name.toLowerCase() === log.party_name.toLowerCase())
+        )
+    );
+    if (!matchingBom?.ml_capacity || (matchingBom.capacity_unit || "ML") !== "ML") {
+      return log.component_type.toUpperCase();
+    }
+
+    return `${log.component_type.toUpperCase()} (${matchingBom.ml_capacity} ML)`;
+  };
 
   const filteredStockOutLogs = inOutLogs.filter((l) => {
     if (l.action_type !== "OUT") return false;
@@ -804,7 +843,7 @@ export default function WarehousePortalPage() {
                     >
                       {dynamicComponentTypes.map((type) => (
                         <option key={type} value={type}>
-                          {type.replace("_", " ")}
+                          {type.replace("_", " ").toUpperCase()}
                         </option>
                       ))}
                     </select>
@@ -914,7 +953,7 @@ export default function WarehousePortalPage() {
                       exportPDFWithLogo(
                         "Warehouse Stock IN Log",
                         ["Party", "Product", "Component", "Quantity", "Remarks", "Timestamp"],
-                        filteredStockInLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type, `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
+                        filteredStockInLogs.map((l) => [l.party_name, l.product_name || "N/A", formatStockInComponent(l), `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -943,7 +982,7 @@ export default function WarehousePortalPage() {
                             <div className="font-bold text-white">{log.party_name}</div>
                             <div className="text-[10px] text-emerald-400">{log.product_name || "N/A"}</div>
                           </td>
-                          <td className="p-3 uppercase text-indigo-300">{log.component_type}</td>
+                          <td className="p-3 text-indigo-300">{formatStockInComponent(log)}</td>
                           <td className="p-3 font-mono font-bold text-emerald-300 whitespace-nowrap">{log.quantity} Pcs</td>
                           <td className="p-3 text-slate-400">{log.remarks}</td>
                           <td className="p-3 text-slate-400 whitespace-nowrap">{new Date(log.created_at).toLocaleString()}</td>
@@ -1005,7 +1044,7 @@ export default function WarehousePortalPage() {
                       className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white uppercase"
                     >
                       {dynamicComponentTypes.map((type) => (
-                        <option key={type} value={type}>{type.replace("_", " ")}</option>
+                        <option key={type} value={type}>{type.replace("_", " ").toUpperCase()}</option>
                       ))}
                     </select>
                   </div>
@@ -1114,7 +1153,7 @@ export default function WarehousePortalPage() {
                       exportPDFWithLogo(
                         "Warehouse Stock OUT Log",
                         ["Party", "Product", "Component", "Quantity", "Remarks", "Timestamp"],
-                        filteredStockOutLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type, `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
+                        filteredStockOutLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type.toUpperCase(), `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -1208,7 +1247,7 @@ export default function WarehousePortalPage() {
                       exportPDFWithLogo(
                         "Warehouse Inventory Stock Balance",
                         ["Party Name", "Product Name", "Component Type", "Available Quantity"],
-                        filteredStockBalances.map((s) => [s.party_name || "General", s.product_name || "General", s.component_type, `${s.quantity || 0} Pcs`])
+                        filteredStockBalances.map((s) => [s.party_name || "General", s.product_name || "General", s.component_type.toUpperCase(), `${s.quantity || 0} Pcs`])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -1276,7 +1315,7 @@ export default function WarehousePortalPage() {
                 ]).map((c, idx) => (
                   <div key={idx} className="bg-[#0b0f19] border border-slate-800 p-3 rounded-xl space-y-1">
                     <div className="flex justify-between text-xs font-bold text-white uppercase">
-                      <span>{c.component_type}</span>
+                      <span>{c.component_type.toUpperCase()}</span>
                       <span className="text-indigo-400 font-mono">Target: {(c.theoretical_weight_kg || 0).toFixed(2)} Kg</span>
                     </div>
                     <input

@@ -598,7 +598,7 @@ export default function AdminPage() {
 
     const duplicateType = getDuplicateComponentTypesInDraft(nextRows)[0];
     if (duplicateType) {
-      alert(`Component "${duplicateType.replace("_", " ")}" is already added in this item. Please choose a different component type.`);
+      alert(`Component "${duplicateType.replace("_", " ").toUpperCase()}" is already added in this item. Please choose a different component type.`);
       return;
     }
 
@@ -617,13 +617,13 @@ export default function AdminPage() {
 
     if (field === "component_type") {
       if (selectedProductForBom && isComponentTypeAlreadySavedForProduct(selectedProductForBom, value)) {
-        alert(`Component "${value.replace("_", " ")}" is already added for this product.`);
+        alert(`Component "${value.replace("_", " ").toUpperCase()}" is already added for this product.`);
         return;
       }
 
       const duplicateType = getDuplicateComponentTypesInDraft(updated)[0];
       if (duplicateType) {
-        alert(`Component "${duplicateType.replace("_", " ")}" is already added in this item. Please choose a different component type.`);
+        alert(`Component "${duplicateType.replace("_", " ").toUpperCase()}" is already added in this item. Please choose a different component type.`);
         return;
       }
     }
@@ -642,7 +642,7 @@ export default function AdminPage() {
   };
 
   const handleDeleteComponentTypeOption = (typeToRemove: string) => {
-    if (confirm(`Remove component option "${typeToRemove}"?`)) {
+    if (confirm(`Remove component option "${typeToRemove.replace("_", " ").toUpperCase()}"?`)) {
       setComponentTypes(componentTypes.filter((t) => t !== typeToRemove));
     }
   };
@@ -655,7 +655,7 @@ export default function AdminPage() {
 
     const duplicateType = getDuplicateComponentTypesInDraft(assemblingRows)[0];
     if (duplicateType) {
-      return alert(`Component "${duplicateType.replace("_", " ")}" is already added in this item. Please choose a different component type.`);
+      return alert(`Component "${duplicateType.replace("_", " ").toUpperCase()}" is already added in this item. Please choose a different component type.`);
     }
 
     const incompleteRow = assemblingRows.find((row) => !row.component_type || !row.weight_10_pcs_grams || (row.ml_capacity === "" && row.capacity_unit === "ML"));
@@ -678,7 +678,7 @@ export default function AdminPage() {
         existingComponentTypes.has(row.component_type.trim().toLowerCase())
       )?.component_type;
       if (alreadySavedType) {
-        alert(`Component "${alreadySavedType.replace("_", " ")}" is already added for this product.`);
+        alert(`Component "${alreadySavedType.replace("_", " ").toUpperCase()}" is already added for this product.`);
         return;
       }
 
@@ -824,6 +824,29 @@ export default function AdminPage() {
     (filterWarehouseAction === "ALL" || w.action_type === filterWarehouseAction) &&
     filterByDateAndText(w.created_at, w.party_name, w.product_name)
   );
+  const getWarehouseComponentLabel = (log: {
+    action_type?: string;
+    component_type: string;
+    party_name?: string;
+    product_name?: string;
+  }) => {
+    const componentType = log.component_type.trim().toLowerCase();
+    if (log.action_type !== "IN" || !["bottle", "tube", "jar"].includes(componentType)) {
+      return log.component_type.toUpperCase();
+    }
+
+    const matchingBom = bomViewList.find(
+      (bom) =>
+        bom.component_type.trim().toLowerCase() === componentType &&
+        bom.products?.product_name.toLowerCase() === log.product_name?.toLowerCase() &&
+        bom.products?.parties?.name.toLowerCase() === log.party_name?.toLowerCase()
+    );
+    if (!matchingBom?.ml_capacity || (matchingBom.capacity_unit || "ML") !== "ML") {
+      return log.component_type.toUpperCase();
+    }
+
+    return `${log.component_type.toUpperCase()} (${matchingBom.ml_capacity} ML)`;
+  };
   const getStockMovementLogs = (stock: { party_name?: string; product_name?: string; component_type?: string }) =>
     warehouseLogs.filter(
       (log) =>
@@ -1203,7 +1226,7 @@ export default function AdminPage() {
                       <td className="p-3"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${w.action_type === "IN" ? "bg-emerald-950 text-emerald-400" : "bg-rose-950 text-rose-400"}`}>{w.action_type}</span></td>
                       <td className="p-3 font-semibold">{w.party_name}</td>
                       <td className="p-3 text-emerald-400">{w.product_name}</td>
-                      <td className="p-3 uppercase">{w.component_type}</td>
+                      <td className="p-3">{getWarehouseComponentLabel(w)}</td>
                       <td className="p-3 font-mono font-bold text-amber-300">{w.quantity}</td>
                       <td className="p-3 whitespace-nowrap text-slate-400">{w.created_at ? new Date(w.created_at).toLocaleString() : "-"}</td>
                     </tr>
@@ -1333,7 +1356,7 @@ export default function AdminPage() {
                               <tr key={w.id}>
                                 <td className="p-2.5"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${w.action_type === "IN" ? "bg-emerald-950 text-emerald-400" : "bg-rose-950 text-rose-400"}`}>{w.action_type}</span></td>
                                 <td className="p-2.5 text-emerald-400">{w.product_name}</td>
-                                <td className="p-2.5 uppercase">{w.component_type}</td>
+                                <td className="p-2.5">{getWarehouseComponentLabel(w)}</td>
                                 <td className="p-2.5 font-mono font-bold text-amber-300">{w.quantity} Pcs</td>
                                 <td className="p-2.5 text-slate-400">{new Date(w.created_at || w.timestamp).toLocaleString()}</td>
                               </tr>
