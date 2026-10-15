@@ -181,12 +181,40 @@ export default function AdminPage() {
     }
   }, [selectedPartyForView]);
 
-  const handlePrintFillingRequest = (request: any, quantityInput: string) => {
+  const handlePrintFillingRequest = async (
+    request: any,
+    quantityInput: string,
+    outputMode: "print" | "pdf"
+  ) => {
     const quantityValue = Number(quantityInput.trim());
     if (!Number.isSafeInteger(quantityValue) || quantityValue <= 0) {
       alert("Please enter a valid quantity greater than zero.");
       return;
     }
+
+    const printWindow = outputMode === "print" ? window.open("about:blank", "_blank") : null;
+    if (outputMode === "print" && !printWindow) {
+      alert("Print window was blocked. Please allow pop-ups for this site and try again.");
+      return;
+    }
+
+    const loadLabelImage = (src: string) =>
+      new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error(`Could not load ${src} for the batch label.`));
+        image.src = src;
+      });
+    const labelImages = await Promise.all([
+      loadLabelImage("/Nigheban-logo-green.png"),
+      loadLabelImage("/LOGO-2.jpeg"),
+    ]).catch((error: unknown) => {
+      printWindow?.close();
+      alert(error instanceof Error ? error.message : "Could not load the logos for the batch label.");
+      return null;
+    });
+    if (!labelImages) return;
+    const [nighebanLogo, cornerLogo] = labelImages;
 
     const formatPrintDate = (value?: string) => {
       if (!value) return "—";
@@ -207,7 +235,9 @@ export default function AdminPage() {
       productBom.find((item) => item.component_type.toLowerCase() === "bottle" && item.ml_capacity > 0) ??
       productBom.find((item) => item.component_type.toLowerCase() === "tube" && item.ml_capacity > 0) ??
       productBom.find((item) => item.ml_capacity > 0);
-    const packSize = packSizeBom
+    const packSize = request.pack_size
+      ? `${request.pack_size} ${request.pack_unit || "ML"}`
+      : packSizeBom
       ? `${packSizeBom.ml_capacity} ${packSizeBom.capacity_unit || "ML"}`
       : "—";
     const party = partiesList.find((item) => item.id === request.party_id)?.name || request.party_name;
@@ -215,34 +245,32 @@ export default function AdminPage() {
     const batchNo = request.batch_no || request.req_code || "—";
     const quantity = quantityValue.toLocaleString("en-US");
 
-    const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: [150, 297] });
+    const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: [101.6, 50.8] });
     pdf.setProperties({ title: `Batch ${batchNo}`, subject: "Batch label" });
 
-    const logoSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="520" height="180" viewBox="0 0 520 180">
-      <text x="5" y="105" fill="#079447" font-family="Arial,sans-serif" font-size="91" font-weight="700" letter-spacing="-5">Nigehban</text>
-      <text x="481" y="44" fill="#555" font-family="Arial,sans-serif" font-size="20">®</text>
-      <path d="M8 119H500" stroke="#888" stroke-width="2"/>
-      <text x="182" y="147" fill="#686868" font-family="Arial,sans-serif" font-size="24" letter-spacing="2">Contract Manufacturing</text>
-      <text x="315" y="173" fill="#686868" font-family="Arial,sans-serif" font-size="19" letter-spacing="2">License #000178</text>
-    </svg>`;
-    const cornerSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="550" height="170" viewBox="0 0 550 170">
-      <path d="M0 0H550V170C390 160 224 99 0 0Z" fill="#0d5933"/>
-      <path d="M0 0H490C371 32 219 76 72 133 48 111 24 79 0 46Z" fill="#e8e8e8"/>
-      <path d="M0 0H425C298 39 183 82 69 139 43 116 20 84 0 52Z" fill="#138b42"/>
-      <path d="M0 0H359C245 43 146 88 63 145 38 122 18 89 0 58Z" fill="#20a64d"/>
-    </svg>`;
     pdf.advancedAPI(() => {
-      pdf.setCurrentTransformationMatrix(pdf.Matrix(0, 1, -1, 0, 150, 0));
-      pdf.addSvgAsImage(logoSvg, 8, 5, 65, 23);
-      pdf.addSvgAsImage(cornerSvg, 234, 5, 55, 17);
-
-      const pageWidth = 297;
-      const left = 5;
-      const top = 34;
+      const pageWidth = 101.6;
+      const pageHeight = 50.8;
+      const left = 2.5;
+      const top = 11.5;
       const tableWidth = pageWidth - left * 2;
-      const columns = [tableWidth * 0.28, tableWidth * 0.22, tableWidth * 0.18, tableWidth * 0.32];
-      const rowHeight = 12;
-      const signatureHeight = 25.5;
+      const labelWidth = 25.5;
+      const rowHeight = 4.7;
+      const signatureHeight = 6.5;
+      const headerLogoWidth = 34;
+      const headerLogoHeight = headerLogoWidth * (nighebanLogo.height / nighebanLogo.width);
+      const cornerLogoWidth = 21;
+      const cornerLogoHeight = cornerLogoWidth * (cornerLogo.height / cornerLogo.width);
+
+      pdf.addImage(nighebanLogo, "PNG", left, 0.6, headerLogoWidth, headerLogoHeight);
+      pdf.addImage(
+        cornerLogo,
+        "JPEG",
+        pageWidth - left - cornerLogoWidth,
+        0.6,
+        cornerLogoWidth,
+        cornerLogoHeight
+      );
 
       const drawCell = (
         x: number,
@@ -250,20 +278,20 @@ export default function AdminPage() {
         width: number,
         height: number,
         text: string,
-        options: { bold?: boolean; align?: "left" | "center"; inset?: number } = {}
+        options: { bold?: boolean; align?: "left" | "center"; inset?: number; fontSize?: number } = {}
       ) => {
         pdf.setDrawColor(0, 0, 0);
         pdf.setLineWidth(0.9);
         pdf.rect(x, y, width, height);
         if (!text) return;
         pdf.setFont("helvetica", options.bold === false ? "normal" : "bold");
-        const baseFontSize = 18;
+        const baseFontSize = options.fontSize ?? 9.5;
         pdf.setFontSize(baseFontSize);
         pdf.setTextColor(0, 0, 0);
         const availableTextWidth = width - 4;
         const textWidth = pdf.getTextWidth(text);
         if (textWidth > availableTextWidth) {
-          pdf.setFontSize(Math.max(8, (baseFontSize * availableTextWidth) / textWidth));
+          pdf.setFontSize(Math.max(5.5, (baseFontSize * availableTextWidth) / textWidth));
         }
         const textX =
           options.align === "center" ? x + width / 2 : x + (options.inset ?? 2);
@@ -274,53 +302,56 @@ export default function AdminPage() {
         });
       };
 
-      const label = () => ({ bold: true as const, inset: 1.5, align: "left" as const });
-      const value = () => ({ bold: true as const, inset: 3.5, align: "left" as const });
+      const label = () => ({ bold: true as const, inset: 1.2, align: "left" as const, fontSize: 8.5 });
+      const value = () => ({ bold: true as const, inset: 1.5, align: "left" as const, fontSize: 9.5 });
+      const twoColumnRow = (y: number, leftLabel: string, leftValue: string, rightLabel: string, rightValue: string) => {
+        const firstLabelWidth = 20;
+        const firstValueWidth = 29;
+        const secondLabelWidth = 16;
+        const secondValueWidth = tableWidth - firstLabelWidth - firstValueWidth - secondLabelWidth;
+        drawCell(left, y, firstLabelWidth, rowHeight, leftLabel, label());
+        drawCell(left + firstLabelWidth, y, firstValueWidth, rowHeight, leftValue, value());
+        drawCell(left + firstLabelWidth + firstValueWidth, y, secondLabelWidth, rowHeight, rightLabel, label());
+        drawCell(
+          left + firstLabelWidth + firstValueWidth + secondLabelWidth,
+          y,
+          secondValueWidth,
+          rowHeight,
+          rightValue,
+          value()
+        );
+      };
       let y = top;
-      drawCell(left, y, columns[0], rowHeight, "COMPANY NAME", label());
-      drawCell(left + columns[0], y, columns[1] + columns[2] + columns[3], rowHeight, party, value());
+      drawCell(left, y, labelWidth, rowHeight, "COMPANY NAME", label());
+      drawCell(left + labelWidth, y, tableWidth - labelWidth, rowHeight, party, value());
       y += rowHeight;
-      drawCell(left, y, columns[0], rowHeight, "PRODUCT NAME", label());
-      drawCell(left + columns[0], y, columns[1] + columns[2] + columns[3], rowHeight, product, value());
+      drawCell(left, y, labelWidth, rowHeight, "PRODUCT NAME", label());
+      drawCell(left + labelWidth, y, tableWidth - labelWidth, rowHeight, product, value());
       y += rowHeight;
-      drawCell(left, y, columns[0], rowHeight, "PACK SIZE", label());
-      drawCell(left + columns[0], y, columns[1], rowHeight, packSize, value());
-      drawCell(left + columns[0] + columns[1], y, columns[2], rowHeight, "QUANTITY:", label());
-      drawCell(
-        left + columns[0] + columns[1] + columns[2],
-        y,
-        columns[3],
-        rowHeight,
-        `${quantity} PCS`,
-        { bold: true, align: "center" }
-      );
+      twoColumnRow(y, "PACK SIZE", packSize, "QUANTITY:", `${quantity} PCS`);
       y += rowHeight;
-      drawCell(left, y, columns[0], rowHeight, "BATCH NO", label());
-      drawCell(left + columns[0], y, columns[1] + columns[2] + columns[3], rowHeight, batchNo, value());
+      drawCell(left, y, labelWidth, rowHeight, "BATCH NO", label());
+      drawCell(left + labelWidth, y, tableWidth - labelWidth, rowHeight, batchNo, value());
       y += rowHeight;
-      drawCell(left, y, columns[0], rowHeight, "MFG DATE", label());
-      drawCell(left + columns[0], y, columns[1], rowHeight, formatPrintDate(request.mfg_date), value());
-      drawCell(left + columns[0] + columns[1], y, columns[2], rowHeight, "EXPIRY", label());
-      drawCell(
-        left + columns[0] + columns[1] + columns[2],
-        y,
-        columns[3],
-        rowHeight,
-        formatPrintDate(request.exp_date),
-        value()
-      );
+      twoColumnRow(y, "MFG DATE", formatPrintDate(request.mfg_date), "EXPIRY", formatPrintDate(request.exp_date));
       y += rowHeight;
-      drawCell(left, y, columns[0], signatureHeight, "PACKED BY", label());
-      drawCell(left + columns[0], y, tableWidth - columns[0], signatureHeight * 2, "");
-      y += signatureHeight;
-      drawCell(left, y, columns[0], signatureHeight, "CHECKED BY", label());
+      drawCell(left, y, labelWidth, signatureHeight, "PACKED BY:", label());
+      drawCell(left, y + signatureHeight, labelWidth, signatureHeight, "CHECKED BY:", label());
+      drawCell(left + labelWidth, y, tableWidth - labelWidth, signatureHeight * 2, "");
+      pdf.setDrawColor(96, 165, 250);
+      pdf.setLineWidth(0.8);
+      pdf.roundedRect(0.7, 0.7, pageWidth - 1.4, pageHeight - 1.4, 2, 2);
     });
 
-    pdf.autoPrint({ variant: "javascript" });
-    const pdfWindow = window.open(pdf.output("bloburl"), "_blank");
-    if (!pdfWindow) {
-      alert("Print window was blocked. Please allow pop-ups for this site and try again.");
-      return;
+    if (outputMode === "pdf") {
+      pdf.save(`batch_label_${batchNo}_${new Date().toISOString().slice(0, 10)}.pdf`);
+    } else {
+      if (!printWindow) {
+        alert("Print window is unavailable. Please allow pop-ups for this site and try again.");
+        return;
+      }
+      pdf.autoPrint({ variant: "javascript" });
+      printWindow.location.href = pdf.output("bloburl").toString();
     }
     setPrintRequest(null);
     setPrintQuantity("");
@@ -1009,8 +1040,10 @@ export default function AdminPage() {
                       <th className="p-3">Batch No</th>
                       <th className="p-3">Party</th>
                       <th className="p-3">Product</th>
+                      <th className="p-3">Pack Size</th>
                       <th className="p-3 text-center">Req. Pcs</th>
-                      <th className="sticky right-0 bg-[#0b0f19] p-3 text-right">Print</th>
+                      <th className="p-3">Room</th>
+                      <th className="sticky right-0 bg-[#0b0f19] p-3 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
@@ -1019,7 +1052,16 @@ export default function AdminPage() {
                         <td className="p-3 font-mono font-bold text-purple-400">{req.batch_no}</td>
                         <td className="p-3 font-bold">{req.party_name}</td>
                         <td className="p-3 text-emerald-400">{req.product_name}</td>
+                        <td className="p-3 whitespace-nowrap font-mono font-bold text-cyan-300">
+                          {req.pack_size ? `${req.pack_size} ${req.pack_unit || "ML"}` : "—"}
+                        </td>
+                        <td className="p-3 whitespace-nowrap font-bold text-cyan-300">
+                          {req.room_number ? `Room ${req.room_number}` : "—"}
+                        </td>
                         <td className="p-3 text-center font-mono text-amber-300">{req.pcs_requested}</td>
+                        <td className="p-3 whitespace-nowrap font-bold text-cyan-300">
+                          {req.room_number ? `Room ${req.room_number}` : "—"}
+                        </td>
                         <td className="sticky right-0 whitespace-nowrap bg-[#121827] p-3 text-right">
                           <button
                             type="button"
@@ -1033,6 +1075,16 @@ export default function AdminPage() {
                           </button>
                           <button
                             type="button"
+                            onClick={() => {
+                              setPrintRequest(req);
+                              setPrintQuantity("");
+                            }}
+                            className="ml-2 rounded-lg border border-rose-500 bg-rose-700 px-4 py-2 font-bold text-white shadow-md hover:bg-rose-600"
+                          >
+                            PDF
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => setSelectedWeightLog(req)}
                             className="ml-2 rounded-lg bg-amber-600/20 px-3 py-2 text-amber-300 hover:bg-amber-600 hover:text-white"
                           >
@@ -1042,7 +1094,7 @@ export default function AdminPage() {
                       </tr>
                     ))}
                     {filteredFillingLogs.length === 0 && (
-                      <tr><td colSpan={5} className="p-6 text-center text-slate-500">No requests received from Filling Incharge.</td></tr>
+                      <tr><td colSpan={7} className="p-6 text-center text-slate-500">No requests received from Filling Incharge.</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -1247,14 +1299,11 @@ export default function AdminPage() {
       {printRequest && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
           <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              handlePrintFillingRequest(printRequest, printQuantity);
-            }}
+            onSubmit={(event) => event.preventDefault()}
             className="w-full max-w-sm space-y-4 rounded-2xl border border-slate-700 bg-[#121827] p-6 text-slate-100 shadow-2xl"
           >
             <div>
-              <h2 className="text-lg font-bold">Print Batch Label</h2>
+              <h2 className="text-lg font-bold">Print or Download Batch Label</h2>
               <p className="mt-1 text-xs text-slate-400">
                 Batch {printRequest.batch_no || printRequest.req_code || "—"} · {printRequest.product_name || "Product"}
               </p>
@@ -1289,10 +1338,18 @@ export default function AdminPage() {
                 Cancel
               </button>
               <button
-                type="submit"
+                type="button"
+                onClick={() => void handlePrintFillingRequest(printRequest, printQuantity, "print")}
                 className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-500"
               >
                 🖨 Print Label
+              </button>
+              <button
+                type="button"
+                onClick={() => void handlePrintFillingRequest(printRequest, printQuantity, "pdf")}
+                className="rounded-lg bg-rose-700 px-4 py-2 text-xs font-bold text-white hover:bg-rose-600"
+              >
+                Download PDF
               </button>
             </div>
           </form>
@@ -1396,7 +1453,12 @@ function WeightModal({ isOpen, onClose, log, onSave }: { isOpen: boolean; onClos
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 text-slate-100">
       <div className="bg-[#121827] border border-slate-800 rounded-2xl w-full max-w-3xl p-6 space-y-6 shadow-2xl">
         <div className="flex justify-between items-start border-b border-slate-800 pb-4">
-          <div><span className="text-[10px] font-bold text-amber-400 uppercase">Batch No: {log.batch_no}</span><h2 className="text-xl font-extrabold text-white">Filling vs Warehouse Weight Detail</h2></div>
+          <div>
+            <span className="text-[10px] font-bold text-amber-400 uppercase">
+              Batch No: {log.batch_no} | Room: {log.room_number ? `Room ${log.room_number}` : "—"}
+            </span>
+            <h2 className="text-xl font-extrabold text-white">Filling vs Warehouse Weight Detail</h2>
+          </div>
           <button onClick={onClose} className="text-slate-400 hover:text-white font-bold text-lg">✕</button>
         </div>
         <div className="overflow-x-auto">

@@ -39,6 +39,9 @@ interface FillingRequest {
   mfg_date: string;
   exp_date: string;
   retail_price: number;
+  pack_size?: number | null;
+  pack_unit?: "ML" | "GM" | string | null;
+  room_number?: number | null;
   party_id?: string;
   product_id?: string;
   party_name: string;
@@ -614,7 +617,13 @@ export default function WarehousePortalPage() {
                 <h2 className="text-sm sm:text-md font-bold text-white">Filling Requests (Batch & Pricing Details)</h2>
                 <div className="flex gap-2 w-full sm:w-auto">
                   <button
-                    onClick={() => exportExcel(filteredRequests, "Filling_Requests_Dispatch")}
+                    onClick={() => exportExcel(
+                      filteredRequests.map(({ room_number, ...request }) => ({
+                        ...request,
+                        room: room_number ? `Room ${room_number}` : "N/A",
+                      })),
+                      "Filling_Requests_Dispatch"
+                    )}
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition text-center"
                   >
                     Excel
@@ -623,13 +632,15 @@ export default function WarehousePortalPage() {
                     onClick={() =>
                       exportPDFWithLogo(
                         "Warehouse Filling Requests Log",
-                        ["Batch No", "Mfg/Exp", "Price", "Party", "Product", "Pcs", "Target Wt", "Scale Wt", "Dates", "Status"],
+                        ["Batch No", "Mfg/Exp", "Price", "Party", "Product", "Pack Size", "Room", "Pcs", "Target Wt", "Scale Wt", "Dates", "Status"],
                         filteredRequests.map((f) => [
                           f.batch_no || f.req_code || "N/A",
                           `Mfg: ${f.mfg_date}\nExp: ${f.exp_date}`,
                           `Rs. ${f.retail_price || 0}`,
                           f.party_name,
                           f.product_name,
+                          f.pack_size ? `${f.pack_size} ${f.pack_unit || "ML"}` : "N/A",
+                          f.room_number ? `Room ${f.room_number}` : "N/A",
                           f.pcs_requested,
                           `${(f.total_weight_kg || 0).toFixed(2)} Kg`,
                           f.actual_dispatched_weight_kg ? `${f.actual_dispatched_weight_kg.toFixed(2)} Kg` : "Pending",
@@ -652,6 +663,8 @@ export default function WarehousePortalPage() {
                       <tr>
                         <th className="p-3">Batch & Pricing</th>
                         <th className="p-3">Party & Product</th>
+                        <th className="p-3">Pack Size</th>
+                        <th className="p-3">Room</th>
                         <th className="p-3">Pcs</th>
                         <th className="p-3 text-indigo-400">Target Wt</th>
                         <th className="p-3 text-amber-400">Scale Wt</th>
@@ -670,6 +683,12 @@ export default function WarehousePortalPage() {
                           <td className="p-3">
                             <div className="font-bold text-white">{req.party_name}</div>
                             <div className="text-[10px] text-emerald-400">{req.product_name}</div>
+                          </td>
+                          <td className="p-3 whitespace-nowrap font-mono font-bold text-cyan-300">
+                            {req.pack_size ? `${req.pack_size} ${req.pack_unit || "ML"}` : "N/A"}
+                          </td>
+                          <td className="p-3 whitespace-nowrap font-bold text-cyan-300">
+                            {req.room_number ? `Room ${req.room_number}` : "N/A"}
                           </td>
                           <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{req.pcs_requested} Pcs</td>
                           <td className="p-3 font-mono font-bold text-indigo-300 whitespace-nowrap">
@@ -1340,7 +1359,10 @@ function WeightVerificationModal({
             <h2 className="text-lg sm:text-xl font-extrabold text-white">Component Weight Verification Modal</h2>
             <p className="text-xs text-slate-400 mt-1">
               Party: <span className="text-white font-semibold">{req.party_name}</span> | Product:{" "}
-              <span className="text-emerald-400 font-semibold">{req.product_name}</span> | Mfg:{" "}
+              <span className="text-emerald-400 font-semibold">{req.product_name}</span>
+              {req.pack_size ? <> | Pack: <span className="text-cyan-300 font-semibold">{req.pack_size} {req.pack_unit || "ML"}</span></> : null}
+              {" "} | Room: <span className="text-cyan-300 font-semibold">{req.room_number ? `Room ${req.room_number}` : "N/A"}</span>
+              {" "} | Mfg:{" "}
               <span className="text-indigo-300">{req.mfg_date}</span> | Exp: <span className="text-rose-300">{req.exp_date}</span>
             </p>
           </div>

@@ -46,6 +46,9 @@ interface FillingRequest {
   mfg_date: string;
   exp_date: string;
   retail_price: number;
+  pack_size?: number | null;
+  pack_unit?: "ML" | "GM" | string | null;
+  room_number?: number | null;
   party_id?: string;
   product_id?: string;
   party_name: string;
@@ -72,6 +75,9 @@ export default function FillingInchargePage() {
   const [mfgDate, setMfgDate] = useState<string>(new Date().toISOString().split("T")[0]);
   const [expDate, setExpDate] = useState<string>("");
   const [retailPrice, setRetailPrice] = useState<string>("");
+  const [productPackSize, setProductPackSize] = useState<number | null>(null);
+  const [productPackUnit, setProductPackUnit] = useState<"ML" | "GM">("ML");
+  const [roomNumber, setRoomNumber] = useState("");
 
   const [selectedPartyId, setSelectedPartyId] = useState("");
   const [selectedProductId, setSelectedProductId] = useState("");
@@ -125,6 +131,8 @@ export default function FillingInchargePage() {
     setStockErrorMsg(null);
     setPcsRequested("");
     setProductBomPreview([]);
+    setProductPackSize(null);
+    setProductPackUnit("ML");
 
     if (!prodId || !selectedPartyId) return;
 
@@ -134,6 +142,15 @@ export default function FillingInchargePage() {
         .from("product_bom")
         .select("*")
         .eq("product_id", prodId);
+      const packSizeBom = bomData?.find(
+        (item: any) => item.component_type?.toLowerCase() === "bottle" && Number(item.ml_capacity) > 0
+      ) ?? bomData?.find(
+        (item: any) => item.component_type?.toLowerCase() === "tube" && Number(item.ml_capacity) > 0
+      ) ?? bomData?.find((item: any) => Number(item.ml_capacity) > 0);
+      if (packSizeBom) {
+        setProductPackSize(Number(packSizeBom.ml_capacity));
+        setProductPackUnit(packSizeBom.capacity_unit === "GM" ? "GM" : "ML");
+      }
 
       // 2. Fetch Live Inventory from DB for the selected Party & Product
       const { data: invData } = await supabase
@@ -213,8 +230,8 @@ export default function FillingInchargePage() {
 
   const handleCreateRequest = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedPartyId || !selectedProductId || !pcsRequested || !batchNo || !expDate || !retailPrice) {
-      return alert("Please fill all required fields including Batch No, Expiry Date, and Retail Price.");
+    if (!selectedPartyId || !selectedProductId || !pcsRequested || !batchNo || !expDate || !retailPrice || !roomNumber) {
+      return alert("Please fill all required fields including Batch No, Expiry Date, Retail Price, and Room.");
     }
 
     if (stockErrorMsg) {
@@ -242,6 +259,9 @@ export default function FillingInchargePage() {
         mfg_date: mfgDate,
         exp_date: expDate,
         retail_price: parseFloat(retailPrice) || 0,
+        pack_size: productPackSize,
+        pack_unit: productPackUnit,
+        room_number: Number(roomNumber),
         party_id: selectedPartyId,
         product_id: selectedProductId,
         party_name: partyObj?.name || "N/A",
@@ -269,11 +289,14 @@ export default function FillingInchargePage() {
 
       setSelectedPartyId("");
       setSelectedProductId("");
+      setRoomNumber("");
       setPcsRequested("");
       setRetailPrice("");
       setExpDate("");
       setStockErrorMsg(null);
       setProductBomPreview([]);
+      setProductPackSize(null);
+      setProductPackUnit("ML");
       setBatchNo(`BATCH-${Math.floor(1000 + Math.random() * 9000)}`);
     } catch (err: any) {
       alert("Database Save Error: " + err.message);
@@ -449,7 +472,7 @@ export default function FillingInchargePage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4">
               <div>
                 <label className="text-xs text-slate-400 block mb-1">Select Party / Company</label>
                 <select
@@ -458,6 +481,8 @@ export default function FillingInchargePage() {
                     setSelectedPartyId(e.target.value);
                     setSelectedProductId("");
                     setProductBomPreview([]);
+                    setProductPackSize(null);
+                    setProductPackUnit("ML");
                   }}
                   className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
                   required
@@ -485,6 +510,26 @@ export default function FillingInchargePage() {
                     <option key={prod.id} value={prod.id}>
                       {prod.product_name}
                     </option>
+                  ))}
+                </select>
+                {selectedProductId && (
+                  <p className="mt-1 text-[10px] text-cyan-300">
+                    Pack size: {productPackSize ? `${productPackSize} ${productPackUnit}` : "Not set in product BOM"}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="text-xs text-cyan-400 block mb-1">Room</label>
+                <select
+                  value={roomNumber}
+                  onChange={(e) => setRoomNumber(e.target.value)}
+                  className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                  required
+                >
+                  <option value="">-- Select Room --</option>
+                  {[1, 2, 3, 4, 5, 6].map((room) => (
+                    <option key={room} value={room}>Room {room}</option>
                   ))}
                 </select>
               </div>
@@ -613,7 +658,13 @@ export default function FillingInchargePage() {
             <h2 className="text-sm sm:text-md font-bold text-white">Filling Requests Workflow & Verification Log</h2>
             <div className="flex gap-2 w-full sm:w-auto">
               <button
-                onClick={() => exportExcel(filteredRequestsList, "Filling_Requests_Log")}
+                onClick={() => exportExcel(
+                  filteredRequestsList.map(({ room_number, ...request }) => ({
+                    ...request,
+                    room: room_number ? `Room ${room_number}` : "N/A",
+                  })),
+                  "Filling_Requests_Log"
+                )}
                 className="flex-1 sm:flex-none px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition text-center"
               >
                 Excel
@@ -622,13 +673,15 @@ export default function FillingInchargePage() {
                 onClick={() => {
                   exportPDFWithLogo(
                     "Filling Incharge Material Requisition Log",
-                    ["Batch No", "Mfg/Exp", "Retail Price", "Party", "Product", "Pcs"],
+                    ["Batch No", "Mfg/Exp", "Retail Price", "Party", "Product", "Pack Size", "Room", "Pcs"],
                     filteredRequestsList.map((f) => [
                       f.batch_no || f.req_code || "N/A",
                       `Mfg: ${f.mfg_date || "N/A"}\nExp: ${f.exp_date || "N/A"}`,
                       `Rs. ${f.retail_price || 0}`,
                       f.party_name,
                       f.product_name,
+                      f.pack_size ? `${f.pack_size} ${f.pack_unit || "ML"}` : "N/A",
+                      f.room_number ? `Room ${f.room_number}` : "N/A",
                       f.pcs_requested,
                     ])
                   );
@@ -647,6 +700,8 @@ export default function FillingInchargePage() {
                   <tr>
                     <th className="p-3">Batch & Pricing</th>
                     <th className="p-3">Party & Product</th>
+                    <th className="p-3">Pack Size</th>
+                    <th className="p-3">Room</th>
                     <th className="p-3">Pcs</th>
                     <th className="p-3 text-indigo-400">Target Wt</th>
                     <th className="p-3 text-amber-400">Scale Wt</th>
@@ -665,6 +720,12 @@ export default function FillingInchargePage() {
                       <td className="p-3">
                         <div className="font-bold text-white">{req.party_name}</div>
                         <div className="text-[10px] text-emerald-400">{req.product_name}</div>
+                      </td>
+                      <td className="p-3 whitespace-nowrap font-mono font-bold text-cyan-300">
+                        {req.pack_size ? `${req.pack_size} ${req.pack_unit || "ML"}` : "N/A"}
+                      </td>
+                      <td className="p-3 whitespace-nowrap font-bold text-cyan-300">
+                        {req.room_number ? `Room ${req.room_number}` : "N/A"}
                       </td>
                       <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{req.pcs_requested} Pcs</td>
                       <td className="p-3 font-mono font-bold text-indigo-300 whitespace-nowrap">
@@ -776,7 +837,10 @@ function WeightVerificationModal({
             <h2 className="text-lg sm:text-xl font-extrabold text-white">Component Weight Verification Modal</h2>
             <p className="text-xs text-slate-400 mt-1">
               Party: <span className="text-white font-semibold">{req.party_name}</span> | Product:{" "}
-              <span className="text-emerald-400 font-semibold">{req.product_name}</span> | Mfg:{" "}
+              <span className="text-emerald-400 font-semibold">{req.product_name}</span>
+              {req.pack_size ? <> | Pack: <span className="text-cyan-300 font-semibold">{req.pack_size} {req.pack_unit || "ML"}</span></> : null}
+              {" "} | Room: <span className="text-cyan-300 font-semibold">{req.room_number ? `Room ${req.room_number}` : "N/A"}</span>
+              {" "} | Mfg:{" "}
               <span className="text-indigo-300">{req.mfg_date}</span> | Exp: <span className="text-rose-300">{req.exp_date}</span>
             </p>
           </div>

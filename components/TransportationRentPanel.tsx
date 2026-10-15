@@ -513,7 +513,9 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
   };
 
   const exportTransportationPdf = () => {
-    const doc = new jsPDF();
+    const summaryRows = Math.max(1, Math.ceil(driverPendingSummaries.length / 3));
+    const pageHeight = Math.max(320, 120 + summaryRows * 26 + visibleRents.length * 8);
+    const doc = new jsPDF({ unit: "mm", format: [297, pageHeight] });
     const reportStatus = mode === "admin" ? activeTab.toUpperCase() : "ALL";
     doc.setFontSize(16);
     doc.setFont("helvetica", "bold");
@@ -521,25 +523,71 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
     doc.setFontSize(9);
     doc.setFont("helvetica", "normal");
     doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 25);
-    autoTable(doc, {
-      startY: 32,
-      head: [["Driver", "Pending Rents", "Pending Amount (PKR)"]],
-      body: driverPendingSummaries.map((summary) => [
-        summary.name,
-        String(summary.count),
-        Number(summary.amount).toLocaleString("en-PK", { maximumFractionDigits: 2 }),
-      ]),
-      theme: "grid",
-      headStyles: { fillColor: [180, 83, 9] },
-      styles: { fontSize: 9 },
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "bold");
+    doc.text("PENDING RENT BY DRIVER", 14, 32);
+
+    const summaryStartY = 36;
+    const cardGap = 5;
+    const cardWidth = (297 - 28 - cardGap * 2) / 3;
+    const cardHeight = 22;
+    driverPendingSummaries.forEach((summary, index) => {
+      const column = index % 3;
+      const row = Math.floor(index / 3);
+      const x = 14 + column * (cardWidth + cardGap);
+      const y = summaryStartY + row * (cardHeight + 4);
+
+      doc.setDrawColor(180, 83, 9);
+      doc.setFillColor(255, 247, 237);
+      doc.roundedRect(x, y, cardWidth, cardHeight, 2, 2, "FD");
+      doc.setTextColor(30, 41, 59);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.text(summary.name, x + 4, y + 6, { maxWidth: cardWidth - 8 });
+      doc.setTextColor(180, 83, 9);
+      doc.setFontSize(10);
+      doc.text(
+        Number(summary.amount).toLocaleString("en-PK", { maximumFractionDigits: 2 }) + " PKR",
+        x + 4,
+        y + 13,
+        { maxWidth: cardWidth - 8 }
+      );
+      doc.setTextColor(71, 85, 105);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.text(`${summary.count} pending ${summary.count === 1 ? "rent" : "rents"}`, x + 4, y + 19);
     });
 
-    doc.addPage();
-    doc.setFontSize(14);
+    if (driverPendingSummaries.length === 0) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text("No drivers found.", 14, summaryStartY + 8);
+    }
+
+    const totalCardY = summaryStartY + summaryRows * (cardHeight + 4);
+    doc.setDrawColor(8, 145, 178);
+    doc.setFillColor(236, 254, 255);
+    doc.roundedRect(14, totalCardY, 269, 20, 2, 2, "FD");
     doc.setFont("helvetica", "bold");
-    doc.text(`RENT DETAILS - ${reportStatus}`, 14, 18);
+    doc.setFontSize(9);
+    doc.setTextColor(8, 80, 105);
+    doc.text("TOTAL RENT", 18, totalCardY + 8);
+    doc.setFontSize(12);
+    doc.setTextColor(8, 145, 178);
+    doc.text(`${formatAmount(filteredRentTotal)} PKR`, 18, totalCardY + 16);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(71, 85, 105);
+    doc.text(`${visibleRents.length} rent records`, 279, totalCardY + 12, { align: "right" });
+
+    const detailsTitleY = totalCardY + 29;
+    doc.setTextColor(0, 0, 0);
+    doc.setFontSize(12);
+    doc.setFont("helvetica", "bold");
+    doc.text(`RENT DETAILS - ${reportStatus}`, 14, detailsTitleY);
     autoTable(doc, {
-      startY: 25,
+      startY: detailsTitleY + 5,
       head: [["Date", "Driver", "Vehicle", "Amount (PKR)", "Company / Trip Details", "Status"]],
       body: visibleRents.map((rent) => [
         formatDate(rent.rent_date),
@@ -551,7 +599,7 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
       ]),
       theme: "grid",
       headStyles: { fillColor: [8, 145, 178] },
-      styles: { fontSize: 8 },
+      styles: { fontSize: 8, fontStyle: "bold", cellPadding: 1.5, minCellHeight: 7, overflow: "ellipsize" },
     });
 
     const suffix = mode === "admin" ? activeTab : "all";
