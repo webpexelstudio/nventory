@@ -505,7 +505,7 @@ export default function WarehousePortalPage() {
   });
 
   return (
-    <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-3 sm:p-6 font-sans space-y-6">
+    <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-3 sm:p-6 font-sans space-y-6 uppercase">
       <div className="border-b border-slate-800 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 max-w-7xl mx-auto">
         <div>
           <span className="text-[10px] sm:text-xs font-semibold text-blue-400 uppercase tracking-wider">
@@ -800,7 +800,7 @@ export default function WarehousePortalPage() {
                     <select
                       value={componentType}
                       onChange={(e) => setComponentType(e.target.value)}
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white capitalize"
+                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white uppercase"
                     >
                       {dynamicComponentTypes.map((type) => (
                         <option key={type} value={type}>
@@ -914,7 +914,7 @@ export default function WarehousePortalPage() {
                       exportPDFWithLogo(
                         "Warehouse Stock IN Log",
                         ["Party", "Product", "Component", "Quantity", "Remarks", "Timestamp"],
-                        filteredStockInLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type, `+${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
+                        filteredStockInLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type, `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -943,8 +943,8 @@ export default function WarehousePortalPage() {
                             <div className="font-bold text-white">{log.party_name}</div>
                             <div className="text-[10px] text-emerald-400">{log.product_name || "N/A"}</div>
                           </td>
-                          <td className="p-3 capitalize text-indigo-300">{log.component_type}</td>
-                          <td className="p-3 font-mono font-bold text-emerald-300 whitespace-nowrap">+{log.quantity} Pcs</td>
+                          <td className="p-3 uppercase text-indigo-300">{log.component_type}</td>
+                          <td className="p-3 font-mono font-bold text-emerald-300 whitespace-nowrap">{log.quantity} Pcs</td>
                           <td className="p-3 text-slate-400">{log.remarks}</td>
                           <td className="p-3 text-slate-400 whitespace-nowrap">{new Date(log.created_at).toLocaleString()}</td>
                         </tr>
@@ -1002,7 +1002,7 @@ export default function WarehousePortalPage() {
                     <select
                       value={outComponentType}
                       onChange={(e) => setOutComponentType(e.target.value)}
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white capitalize"
+                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white uppercase"
                     >
                       {dynamicComponentTypes.map((type) => (
                         <option key={type} value={type}>{type.replace("_", " ")}</option>
@@ -1114,7 +1114,7 @@ export default function WarehousePortalPage() {
                       exportPDFWithLogo(
                         "Warehouse Stock OUT Log",
                         ["Party", "Product", "Component", "Quantity", "Remarks", "Timestamp"],
-                        filteredStockOutLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type, `-${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
+                        filteredStockOutLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type, `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -1143,8 +1143,8 @@ export default function WarehousePortalPage() {
                             <div className="font-bold text-white">{log.party_name}</div>
                             <div className="text-[10px] text-emerald-400">{log.product_name || "N/A"}</div>
                           </td>
-                          <td className="p-3 capitalize text-indigo-300">{log.component_type}</td>
-                          <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">-{log.quantity} Pcs</td>
+                          <td className="p-3 uppercase text-indigo-300">{log.component_type}</td>
+                          <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{log.quantity} Pcs</td>
                           <td className="p-3 text-slate-400">{log.remarks}</td>
                           <td className="p-3 text-slate-400 whitespace-nowrap">{new Date(log.created_at).toLocaleString()}</td>
                         </tr>
@@ -1234,7 +1234,7 @@ export default function WarehousePortalPage() {
                         <tr key={stk.id} className="hover:bg-slate-800/50">
                           <td className="p-3 font-bold text-white">{stk.party_name || "General Party"}</td>
                           <td className="p-3 text-emerald-400">{stk.product_name || "General Product"}</td>
-                          <td className="p-3 capitalize text-indigo-300">{stk.component_type}</td>
+                          <td className="p-3 uppercase text-indigo-300">{stk.component_type}</td>
                           <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{stk.quantity || 0} Pcs</td>
                         </tr>
                       ))}
@@ -1275,7 +1275,7 @@ export default function WarehousePortalPage() {
                   { component_type: "seal", theoretical_weight_kg: (dispatchModalReq.pcs_requested * 0.5) / 1000 },
                 ]).map((c, idx) => (
                   <div key={idx} className="bg-[#0b0f19] border border-slate-800 p-3 rounded-xl space-y-1">
-                    <div className="flex justify-between text-xs font-bold text-white capitalize">
+                    <div className="flex justify-between text-xs font-bold text-white uppercase">
                       <span>{c.component_type}</span>
                       <span className="text-indigo-400 font-mono">Target: {(c.theoretical_weight_kg || 0).toFixed(2)} Kg</span>
                     </div>
@@ -1390,7 +1390,7 @@ function WeightVerificationModal({
 
                   return (
                     <tr key={idx} className="hover:bg-slate-800/50">
-                      <td className="p-3 font-bold text-white capitalize">{c.component_type}</td>
+                      <td className="p-3 font-bold text-white uppercase">{c.component_type}</td>
                       <td className="p-3 font-mono text-slate-400 whitespace-nowrap">{c.weight_10_pcs_grams || 0}g</td>
                       <td className="p-3 font-mono font-bold text-indigo-300 whitespace-nowrap">
                         {(c.theoretical_weight_kg || 0).toFixed(2)} Kg

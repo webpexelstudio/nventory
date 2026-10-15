@@ -102,8 +102,15 @@ export default function AdminPage() {
   const [newTypeName, setNewTypeName] = useState("");
   const [showAddTypeModal, setShowAddTypeModal] = useState(false);
 
+  const createDefaultAssemblingRow = (): AssemblingRow => ({
+    component_type: "bottle",
+    ml_capacity: "500",
+    capacity_unit: "ML",
+    weight_10_pcs_grams: "122",
+  });
+
   const [assemblingRows, setAssemblingRows] = useState<AssemblingRow[]>([
-    { component_type: "bottle", ml_capacity: "500", capacity_unit: "ML", weight_10_pcs_grams: "122" },
+    createDefaultAssemblingRow(),
   ]);
 
   const [editingParty, setEditingParty] = useState<Party | null>(null);
@@ -555,11 +562,47 @@ export default function AdminPage() {
     }
   };
 
+  const getDuplicateComponentTypesInDraft = (rows: AssemblingRow[]) => {
+    const seen = new Set<string>();
+    const duplicates = new Set<string>();
+
+    rows.forEach((row) => {
+      const type = row.component_type?.trim().toLowerCase();
+      if (!type) return;
+      if (seen.has(type)) {
+        duplicates.add(type);
+      }
+      seen.add(type);
+    });
+
+    return Array.from(duplicates);
+  };
+
+  const isComponentTypeAlreadySavedForProduct = (productId: string, componentType: string) =>
+    bomViewList.some(
+      (bom) =>
+        bom.product_id === productId &&
+        bom.component_type.trim().toLowerCase() === componentType.trim().toLowerCase()
+    );
+
   const handleAddAssemblingRow = () => {
-    setAssemblingRows([
+    const nextRows: AssemblingRow[] = [
       ...assemblingRows,
-      { component_type: componentTypes[0] || "bottle", ml_capacity: "", capacity_unit: "ML", weight_10_pcs_grams: "" },
-    ]);
+      {
+        component_type: componentTypes[0] || "bottle",
+        ml_capacity: "",
+        capacity_unit: "ML",
+        weight_10_pcs_grams: "",
+      },
+    ];
+
+    const duplicateType = getDuplicateComponentTypesInDraft(nextRows)[0];
+    if (duplicateType) {
+      alert(`Component "${duplicateType.replace("_", " ")}" is already added in this item. Please choose a different component type.`);
+      return;
+    }
+
+    setAssemblingRows(nextRows);
   };
 
   const handleRemoveAssemblingRow = (index: number) => {
@@ -571,6 +614,20 @@ export default function AdminPage() {
   const handleRowChange = <K extends keyof AssemblingRow,>(index: number, field: K, value: AssemblingRow[K]) => {
     const updated = [...assemblingRows];
     updated[index] = { ...updated[index], [field]: value };
+
+    if (field === "component_type") {
+      if (selectedProductForBom && isComponentTypeAlreadySavedForProduct(selectedProductForBom, value)) {
+        alert(`Component "${value.replace("_", " ")}" is already added for this product.`);
+        return;
+      }
+
+      const duplicateType = getDuplicateComponentTypesInDraft(updated)[0];
+      if (duplicateType) {
+        alert(`Component "${duplicateType.replace("_", " ")}" is already added in this item. Please choose a different component type.`);
+        return;
+      }
+    }
+
     setAssemblingRows(updated);
   };
 
@@ -595,8 +652,36 @@ export default function AdminPage() {
     if (!selectedPartyForBom || !selectedProductForBom) {
       return alert("Please select Company/Party and Product.");
     }
+
+    const duplicateType = getDuplicateComponentTypesInDraft(assemblingRows)[0];
+    if (duplicateType) {
+      return alert(`Component "${duplicateType.replace("_", " ")}" is already added in this item. Please choose a different component type.`);
+    }
+
+    const incompleteRow = assemblingRows.find((row) => !row.component_type || !row.weight_10_pcs_grams || (row.ml_capacity === "" && row.capacity_unit === "ML"));
+    if (incompleteRow) {
+      return alert("Please complete all component rows before saving the assembling setup.");
+    }
+
     setLoading(true);
     try {
+      const { data: existingBomRows, error: existingBomError } = await supabase
+        .from("product_bom")
+        .select("component_type")
+        .eq("product_id", selectedProductForBom);
+      if (existingBomError) throw existingBomError;
+
+      const existingComponentTypes = new Set(
+        (existingBomRows ?? []).map((row) => row.component_type.trim().toLowerCase())
+      );
+      const alreadySavedType = assemblingRows.find((row) =>
+        existingComponentTypes.has(row.component_type.trim().toLowerCase())
+      )?.component_type;
+      if (alreadySavedType) {
+        alert(`Component "${alreadySavedType.replace("_", " ")}" is already added for this product.`);
+        return;
+      }
+
       const payload = assemblingRows.map((row) => ({
         product_id: selectedProductForBom,
         component_type: row.component_type,
@@ -611,7 +696,7 @@ export default function AdminPage() {
       alert("Assembling Setup Record Saved Successfully!");
       setSelectedPartyForBom("");
       setSelectedProductForBom("");
-      setAssemblingRows([{ component_type: "bottle", ml_capacity: "500", capacity_unit: "ML", weight_10_pcs_grams: "122" }]);
+      setAssemblingRows([createDefaultAssemblingRow()]);
       fetchMasterData();
     } catch (err: any) {
       alert("Save Error: " + err.message);
@@ -828,8 +913,8 @@ export default function AdminPage() {
           <button onClick={() => setActiveTab("products")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "products" ? "bg-purple-700 text-white" : "text-slate-400 hover:text-white"}`}>Products ({productsList.length})</button>
           <button onClick={() => setActiveTab("assembling")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "assembling" ? "bg-purple-700 text-white" : "text-slate-400 hover:text-white"}`}>BOM Assembling</button>
           <button onClick={() => setActiveTab("filling")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "filling" ? "bg-amber-600 text-white" : "text-slate-400 hover:text-white"}`}>Filling Log</button>
-          <button onClick={() => setActiveTab("warehouse")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "warehouse" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}>Warehouse IN/OUT</button>
-          <button onClick={() => setActiveTab("inventory")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "inventory" ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-white"}`}>Total Inventory</button>
+          <button onClick={() => setActiveTab("warehouse")} className={`px-3 py-2 rounded-lg font-bold transition uppercase ${activeTab === "warehouse" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}>Warehouse IN/OUT</button>
+          <button onClick={() => setActiveTab("inventory")} className={`px-3 py-2 rounded-lg font-bold transition uppercase ${activeTab === "inventory" ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-white"}`}>Total Inventory</button>
           <button onClick={() => setActiveTab("client_access")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "client_access" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"}`}>Client Portal Access</button>
         </div>
       </div>
@@ -845,7 +930,7 @@ export default function AdminPage() {
                 <form onSubmit={handleSaveParty} className="space-y-4">
                   <div>
                     <label className="block text-xs text-slate-400 mb-1">Company / Party Name</label>
-                    <input type="text" value={partyName} onChange={(e) => setPartyName(e.target.value)} placeholder="e.g. Nigehban Healthcare Ltd" className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200" required />
+                    <input type="text" value={partyName} onChange={(e) => setPartyName(e.target.value)} placeholder="e.g. Nigehban Healthcare Ltd" className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 uppercase" required />
                   </div>
                   <div>
                     <label className="block text-xs text-slate-400 mb-1">Party Unique Code</label>
@@ -888,7 +973,7 @@ export default function AdminPage() {
                 <span className="text-[11px] text-slate-400 font-semibold uppercase">Available Component Types:</span>
                 <div className="flex flex-wrap gap-2">
                   {componentTypes.map((type) => (
-                    <span key={type} className="bg-slate-800 text-amber-300 border border-slate-700 px-2.5 py-1 rounded-md text-xs flex items-center gap-2 capitalize">
+                    <span key={type} className="bg-slate-800 text-amber-300 border border-slate-700 px-2.5 py-1 rounded-md text-xs flex items-center gap-2 uppercase">
                       {type.replace("_", " ")}
                       <button type="button" onClick={() => handleDeleteComponentTypeOption(type)} className="text-rose-400 hover:text-rose-200 font-bold ml-1">×</button>
                     </span>
@@ -924,8 +1009,8 @@ export default function AdminPage() {
                     <button type="button" onClick={() => handleRemoveAssemblingRow(index)} className="absolute -top-2 -right-2 bg-rose-600 text-white w-6 h-6 rounded-full text-xs font-bold">✕</button>
                     <div className="flex-1 w-full">
                       <label className="block text-[10px] text-slate-500 mb-1">Component Type</label>
-                      <select value={row.component_type} onChange={(e) => handleRowChange(index, "component_type", e.target.value)} className="w-full bg-[#121827] border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 capitalize" required>
-                        {componentTypes.map((t) => (<option key={t} value={t}>{t.replace("_", " ")}</option>))}
+                      <select value={row.component_type} onChange={(e) => handleRowChange(index, "component_type", e.target.value)} className="w-full bg-[#121827] border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 uppercase" required>
+                        {componentTypes.map((t) => (<option key={t} value={t}>{t.replace("_", " ").toUpperCase()}</option>))}
                       </select>
                     </div>
                     <div className="flex-1 w-full">
@@ -1014,7 +1099,7 @@ export default function AdminPage() {
                     <tr key={bom.id} className="hover:bg-slate-800/50">
                       <td className="p-3 font-semibold text-emerald-400">{bom.products?.parties?.name}</td>
                       <td className="p-3 font-semibold text-slate-200">{bom.products?.product_name}</td>
-                      <td className="p-3 capitalize font-bold text-amber-400">{bom.component_type.replace("_", " ")}</td>
+                      <td className="p-3 uppercase font-bold text-amber-400">{bom.component_type.replace("_", " ")}</td>
                       <td className="p-3 font-mono">{bom.ml_capacity ? `${bom.ml_capacity} ${bom.capacity_unit || "ML"}` : "-"}</td>
                       <td className="p-3 font-mono font-bold text-amber-300">{bom.weight_10_pcs_grams} g</td>
                       <td className="p-3 text-right">
@@ -1104,7 +1189,7 @@ export default function AdminPage() {
         )}
 
         {activeTab === "warehouse" && (
-          <div className="bg-[#121827] border border-slate-800 rounded-xl p-6 shadow-lg space-y-4">
+          <div className="bg-[#121827] border border-slate-800 rounded-xl p-6 shadow-lg space-y-4 uppercase">
             <h2 className="text-md font-semibold text-slate-200">Warehouse Register (Live Database)</h2>
             {renderInventoryFilters(true)}
             <div className="overflow-x-auto">
@@ -1118,7 +1203,7 @@ export default function AdminPage() {
                       <td className="p-3"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${w.action_type === "IN" ? "bg-emerald-950 text-emerald-400" : "bg-rose-950 text-rose-400"}`}>{w.action_type}</span></td>
                       <td className="p-3 font-semibold">{w.party_name}</td>
                       <td className="p-3 text-emerald-400">{w.product_name}</td>
-                      <td className="p-3 capitalize">{w.component_type}</td>
+                      <td className="p-3 uppercase">{w.component_type}</td>
                       <td className="p-3 font-mono font-bold text-amber-300">{w.quantity}</td>
                       <td className="p-3 whitespace-nowrap text-slate-400">{w.created_at ? new Date(w.created_at).toLocaleString() : "-"}</td>
                     </tr>
@@ -1133,7 +1218,7 @@ export default function AdminPage() {
         )}
 
         {activeTab === "inventory" && (
-          <div className="bg-[#121827] border border-slate-800 p-6 rounded-xl space-y-4">
+          <div className="bg-[#121827] border border-slate-800 p-6 rounded-xl space-y-4 uppercase">
             <h2 className="text-md font-semibold text-white">Master Inventory Stock Balance (Live Database)</h2>
             {renderInventoryFilters()}
             <div className="overflow-x-auto">
@@ -1151,7 +1236,7 @@ export default function AdminPage() {
                       <tr key={inv.id || idx} className="hover:bg-slate-800/50">
                         <td className="p-3 font-semibold">{inv.party_name}</td>
                         <td className="p-3 text-emerald-400">{inv.product_name}</td>
-                        <td className="p-3 capitalize">{inv.component_type}</td>
+                        <td className="p-3 uppercase">{inv.component_type}</td>
                         <td className="p-3 font-mono text-amber-300">{inv.quantity || 0}</td>
                         <td className="p-3 whitespace-nowrap text-slate-400">{lastIn?.created_at ? new Date(lastIn.created_at).toLocaleString() : "-"}</td>
                         <td className="p-3 whitespace-nowrap text-slate-400">{lastOut?.created_at ? new Date(lastOut.created_at).toLocaleString() : "-"}</td>
@@ -1192,7 +1277,7 @@ export default function AdminPage() {
             </div>
 
             {/* ADMIN VIEW PARTY LIVE PORTAL SECTION */}
-            <div className="bg-[#121827] border border-slate-800 p-6 rounded-xl shadow-lg space-y-4">
+            <div className="bg-[#121827] border border-slate-800 p-6 rounded-xl shadow-lg space-y-4 uppercase">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
                 <h3 className="text-sm font-semibold text-emerald-400 uppercase">🔍 Admin View: Live Party Portal Dashboard (IN/OUT & Stock)</h3>
                 <div className="w-full sm:w-72">
@@ -1223,7 +1308,7 @@ export default function AdminPage() {
                             partyInventoryStock.map((inv: any, i: number) => (
                               <tr key={i}>
                                 <td className="p-2.5 font-bold text-emerald-400">{inv.product_name}</td>
-                                <td className="p-2.5 capitalize">{inv.component_type}</td>
+                                <td className="p-2.5 uppercase">{inv.component_type}</td>
                                 <td className="p-2.5 font-mono text-amber-300">{inv.quantity || 0}</td>
                               </tr>
                             ))
@@ -1248,7 +1333,7 @@ export default function AdminPage() {
                               <tr key={w.id}>
                                 <td className="p-2.5"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${w.action_type === "IN" ? "bg-emerald-950 text-emerald-400" : "bg-rose-950 text-rose-400"}`}>{w.action_type}</span></td>
                                 <td className="p-2.5 text-emerald-400">{w.product_name}</td>
-                                <td className="p-2.5 capitalize">{w.component_type}</td>
+                                <td className="p-2.5 uppercase">{w.component_type}</td>
                                 <td className="p-2.5 font-mono font-bold text-amber-300">{w.quantity} Pcs</td>
                                 <td className="p-2.5 text-slate-400">{new Date(w.created_at || w.timestamp).toLocaleString()}</td>
                               </tr>
@@ -1364,7 +1449,7 @@ export default function AdminPage() {
         <div className="fixed inset-0 bg-black/75 flex items-center justify-center p-4 z-50">
           <div className="bg-[#121827] border border-slate-800 p-6 rounded-xl w-full max-w-md space-y-4 shadow-2xl">
             <h3 className="text-sm font-semibold text-slate-100">Add New Component Type Option</h3>
-            <input type="text" value={newTypeName} onChange={(e) => setNewTypeName(e.target.value)} placeholder="e.g. outer_carton" className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200" />
+            <input type="text" value={newTypeName} onChange={(e) => setNewTypeName(e.target.value)} placeholder="e.g. outer_carton" className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 uppercase" />
             <div className="flex justify-end gap-3 pt-2">
               <button type="button" onClick={() => setShowAddTypeModal(false)} className="px-4 py-1.5 text-xs bg-slate-800 text-slate-300 rounded-lg">Cancel</button>
               <button type="button" onClick={handleAddNewComponentType} className="px-4 py-1.5 text-xs bg-amber-600 text-white rounded-lg font-medium">Add Option</button>
@@ -1407,8 +1492,8 @@ export default function AdminPage() {
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
           <form onSubmit={handleUpdateBomItem} className="bg-[#121827] border border-slate-800 p-6 rounded-2xl space-y-4 w-full max-w-md">
             <h3 className="text-lg font-bold text-white">Edit Assembling Component</h3>
-            <select value={editingBomItem.component_type} onChange={(e) => setEditingBomItem({ ...editingBomItem, component_type: e.target.value })} className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-white capitalize" required>
-              {componentTypes.map((type) => (<option key={type} value={type}>{type.replace("_", " ")}</option>))}
+            <select value={editingBomItem.component_type} onChange={(e) => setEditingBomItem({ ...editingBomItem, component_type: e.target.value })} className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-white uppercase" required>
+              {componentTypes.map((type) => (<option key={type} value={type}>{type.replace("_", " ").toUpperCase()}</option>))}
             </select>
             <label className="block text-xs text-slate-400">Fill Capacity</label>
             <div className="flex gap-2">
@@ -1469,7 +1554,7 @@ function WeightModal({ isOpen, onClose, log, onSave }: { isOpen: boolean; onClos
             <tbody className="divide-y divide-slate-800">
               {(log.components || []).map((c: any, idx: number) => (
                 <tr key={idx}>
-                  <td className="p-3 font-bold capitalize">{c.component_type}</td>
+                  <td className="p-3 font-bold uppercase">{c.component_type}</td>
                   <td className="p-3 font-mono">{c.weight_10_pcs_grams}g</td>
                   <td className="p-3 font-mono text-indigo-300">{c.theoretical_weight_kg ? c.theoretical_weight_kg.toFixed(2) : "0.00"} Kg</td>
                   <td className="p-3"><input type="number" step="0.01" value={actualWeights[c.component_type] || ""} onChange={(e) => handleInputChange(c.component_type, e.target.value)} className="bg-[#0b0f19] border border-slate-700 rounded px-2 py-1 text-xs text-amber-300 font-mono w-28" /></td>

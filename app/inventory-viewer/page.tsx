@@ -48,7 +48,6 @@ interface StockBalance {
 
 export default function WarehouseStaffPortal() {
   const [activeTab, setActiveTab] = useState<"balance" | "stock_in" | "stock_out" | "transportation_rent">("balance");
-  const [loading, setLoading] = useState(false);
 
   // Master Data
   const [partiesList, setPartiesList] = useState<Party[]>([]);
@@ -57,13 +56,6 @@ export default function WarehouseStaffPortal() {
   // Inventory Data
   const [inOutLogs, setInOutLogs] = useState<InventoryLog[]>([]);
   const [stockBalances, setStockBalances] = useState<StockBalance[]>([]);
-
-  // Stock IN Form State
-  const [selectedPartyId, setSelectedPartyId] = useState("");
-  const [selectedProductId, setSelectedProductId] = useState("");
-  const [componentType, setComponentType] = useState("bottle");
-  const [qtyPcs, setQtyPcs] = useState("");
-  const [remarks, setRemarks] = useState("");
 
   // Tab 1: Balance Filters
   const [balPartyId, setBalPartyId] = useState("");
@@ -86,7 +78,6 @@ export default function WarehouseStaffPortal() {
   }, []);
 
   const fetchWarehouseData = async () => {
-    setLoading(true);
     try {
       const { data: partyData } = await supabase.from("parties").select("*").order("name");
       if (partyData) setPartiesList(partyData);
@@ -101,12 +92,9 @@ export default function WarehouseStaffPortal() {
       if (stockData) setStockBalances(stockData);
     } catch (e) {
       console.error(e);
-    } finally {
-      setLoading(false);
     }
   };
 
-  const filteredProductsForSelect = productsList.filter((p) => p.party_id === selectedPartyId);
   const filteredProductsForBal = productsList.filter((p) => p.party_id === balPartyId);
   const filteredProductsForIn = productsList.filter((p) => p.party_id === inPartyId);
   const filteredProductsForOut = productsList.filter((p) => p.party_id === outPartyId);
@@ -162,64 +150,6 @@ export default function WarehouseStaffPortal() {
     doc.save(`${title.toLowerCase().replace(/\s+/g, "_")}_${new Date().toISOString().split("T")[0]}.pdf`);
   };
 
-  const handleSaveStockIn = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedPartyId || !selectedProductId || !qtyPcs) {
-      return alert("Please select Party, Product, and enter Quantity.");
-    }
-
-    setLoading(true);
-    try {
-      const partyObj = partiesList.find((p) => p.id === selectedPartyId);
-      const prodObj = productsList.find((p) => p.id === selectedProductId);
-      const qtyNum = parseInt(qtyPcs) || 0;
-
-      const logPayload = {
-        action_type: "IN",
-        party_name: partyObj?.name || "N/A",
-        product_name: prodObj?.product_name || "N/A",
-        component_type: componentType,
-        quantity: qtyNum,
-        remarks: remarks || "Stock IN entry in Warehouse",
-        created_at: new Date().toISOString(),
-      };
-
-      const { error: logErr } = await supabase.from("inventory_logs").insert([logPayload]);
-      if (logErr) throw logErr;
-
-      const existingStock = stockBalances.find(
-        (s) => s.party_id === selectedPartyId && s.product_id === selectedProductId && s.component_type === componentType
-      );
-
-      if (existingStock) {
-        const newQty = existingStock.quantity + qtyNum;
-        await supabase.from("inventory").update({ quantity: newQty }).eq("id", existingStock.id);
-      } else {
-        await supabase.from("inventory").insert([
-          {
-            party_id: selectedPartyId,
-            party_name: partyObj?.name || "N/A",
-            product_id: selectedProductId,
-            product_name: prodObj?.product_name || "N/A",
-            component_type: componentType,
-            quantity: qtyNum,
-          },
-        ]);
-      }
-
-      alert("Stock IN recorded successfully & Balance updated!");
-      setSelectedPartyId("");
-      setSelectedProductId("");
-      setQtyPcs("");
-      setRemarks("");
-      fetchWarehouseData();
-    } catch (err: any) {
-      alert("Error: " + err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   // Filtered lists
   const filteredStockBalances = stockBalances.filter((s) => {
     if (balPartyId && s.party_id !== balPartyId) return false;
@@ -256,7 +186,7 @@ export default function WarehouseStaffPortal() {
   });
 
   return (
-    <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-3 sm:p-6 font-sans space-y-6">
+    <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-3 sm:p-6 font-sans space-y-6 uppercase">
       <div className="border-b border-slate-800 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 max-w-7xl mx-auto">
         <div>
           <span className="text-[10px] sm:text-xs font-semibold text-emerald-400 uppercase tracking-wider">
@@ -289,7 +219,7 @@ export default function WarehouseStaffPortal() {
               activeTab === "stock_in" ? "bg-emerald-600 text-white shadow-lg" : "bg-[#121827] text-slate-400 hover:text-white"
             }`}
           >
-            📥 Stock IN Entry & History
+            📥 Stock IN History
           </button>
           <button
             onClick={() => setActiveTab("stock_out")}
@@ -387,7 +317,7 @@ export default function WarehouseStaffPortal() {
                         <tr key={stk.id} className="hover:bg-slate-800/50">
                           <td className="p-3 font-bold text-white">{stk.party_name}</td>
                           <td className="p-3 text-emerald-400">{stk.product_name || "General"}</td>
-                          <td className="p-3 capitalize text-indigo-300">{stk.component_type}</td>
+                          <td className="p-3 uppercase text-indigo-300">{stk.component_type}</td>
                           <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{stk.quantity} Pcs</td>
                         </tr>
                       ))}
@@ -399,99 +329,9 @@ export default function WarehouseStaffPortal() {
           </div>
         )}
 
-        {/* TAB 2: STOCK IN FORM & ROW-WISE HISTORY */}
+        {/* TAB 2: STOCK IN HISTORY */}
         {activeTab === "stock_in" && (
           <div className="space-y-6">
-            <div className="bg-[#121827] border border-slate-800 p-4 sm:p-6 rounded-2xl shadow-xl space-y-6">
-              <h2 className="text-sm sm:text-md font-bold text-white">Stock IN Entry Form (Receive Material)</h2>
-              <form onSubmit={handleSaveStockIn} className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">Select Party / Company</label>
-                    <select
-                      value={selectedPartyId}
-                      onChange={(e) => {
-                        setSelectedPartyId(e.target.value);
-                        setSelectedProductId("");
-                      }}
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
-                      required
-                    >
-                      <option value="">-- Select Party --</option>
-                      {partiesList.map((p) => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">Select Product</label>
-                    <select
-                      value={selectedProductId}
-                      onChange={(e) => setSelectedProductId(e.target.value)}
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
-                      required
-                      disabled={!selectedPartyId}
-                    >
-                      <option value="">-- Select Product --</option>
-                      {filteredProductsForSelect.map((prod) => (
-                        <option key={prod.id} value={prod.id}>{prod.product_name}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">Component Type</label>
-                    <select
-                      value={componentType}
-                      onChange={(e) => setComponentType(e.target.value)}
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
-                    >
-                      <option value="bottle">Bottle</option>
-                      <option value="cap">Cap</option>
-                      <option value="nozzle">Nozzle</option>
-                      <option value="seal">Seal</option>
-                      <option value="carton">Carton Box</option>
-                      <option value="inner">Inner Carton</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs text-amber-400 block mb-1">Quantity Received (Pcs)</label>
-                    <input
-                      type="number"
-                      value={qtyPcs}
-                      onChange={(e) => setQtyPcs(e.target.value)}
-                      placeholder="e.g. 5000"
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-amber-300 font-mono font-bold"
-                      required
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">Remarks / Note</label>
-                    <input
-                      type="text"
-                      value={remarks}
-                      onChange={(e) => setRemarks(e.target.value)}
-                      placeholder="Supplier / batch details"
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-xl transition text-xs shadow-lg"
-                >
-                  {loading ? "Saving..." : "Confirm & Save Stock IN Entry"}
-                </button>
-              </form>
-            </div>
-
             {/* Stock IN Filters */}
             <div className="bg-[#121827] border border-slate-800 p-3 sm:p-4 rounded-xl grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
               <div>
@@ -562,7 +402,7 @@ export default function WarehouseStaffPortal() {
                       exportPDFWithLogo(
                         "Warehouse Stock IN Log",
                         ["Party", "Product", "Component", "Quantity", "Remarks", "Timestamp"],
-                        filteredStockInLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type, `+${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
+                        filteredStockInLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type, `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -591,8 +431,8 @@ export default function WarehouseStaffPortal() {
                             <div className="font-bold text-white">{log.party_name}</div>
                             <div className="text-[10px] text-emerald-400">{log.product_name || "N/A"}</div>
                           </td>
-                          <td className="p-3 capitalize text-indigo-300">{log.component_type}</td>
-                          <td className="p-3 font-mono font-bold text-emerald-300 whitespace-nowrap">+{log.quantity} Pcs</td>
+                          <td className="p-3 uppercase text-indigo-300">{log.component_type}</td>
+                          <td className="p-3 font-mono font-bold text-emerald-300 whitespace-nowrap">{log.quantity} Pcs</td>
                           <td className="p-3 text-slate-400">{log.remarks}</td>
                           <td className="p-3 text-slate-400 whitespace-nowrap">{new Date(log.created_at).toLocaleString()}</td>
                         </tr>
@@ -676,7 +516,7 @@ export default function WarehouseStaffPortal() {
                       exportPDFWithLogo(
                         "Warehouse Stock OUT Log",
                         ["Party", "Product", "Component", "Quantity", "Remarks", "Timestamp"],
-                        filteredStockOutLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type, `-${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
+                        filteredStockOutLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type, `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -705,8 +545,8 @@ export default function WarehouseStaffPortal() {
                             <div className="font-bold text-white">{log.party_name}</div>
                             <div className="text-[10px] text-emerald-400">{log.product_name || "N/A"}</div>
                           </td>
-                          <td className="p-3 capitalize text-indigo-300">{log.component_type}</td>
-                          <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">-{log.quantity} Pcs</td>
+                          <td className="p-3 uppercase text-indigo-300">{log.component_type}</td>
+                          <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{log.quantity} Pcs</td>
                           <td className="p-3 text-slate-400">{log.remarks}</td>
                           <td className="p-3 text-slate-400 whitespace-nowrap">{new Date(log.created_at).toLocaleString()}</td>
                         </tr>

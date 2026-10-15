@@ -292,7 +292,7 @@ export default function ClientPortalPage() {
   );
 
   return (
-    <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-3 sm:p-6 font-sans space-y-6">
+    <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-3 sm:p-6 font-sans space-y-6 uppercase">
       <div className="border-b border-slate-800 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 max-w-7xl mx-auto">
         <div>
           <span className="text-xs font-semibold text-blue-400 uppercase tracking-wider">
@@ -470,8 +470,8 @@ export default function ClientPortalPage() {
                     filteredIn.map((row) => (
                       <tr key={row.id} className="hover:bg-slate-800/50">
                         <td className="p-3 font-bold text-white">{row.product_name || "N/A"}</td>
-                        <td className="p-3 capitalize text-indigo-300">{row.component_type}</td>
-                        <td className="p-3 font-mono font-bold text-emerald-400">+{row.quantity} Pcs</td>
+                        <td className="p-3 uppercase text-indigo-300">{row.component_type}</td>
+                        <td className="p-3 font-mono font-bold text-emerald-400">{row.quantity} Pcs</td>
                         <td className="p-3 text-slate-300">{row.remarks || "—"}</td>
                         <td className="p-3 text-slate-400">{new Date(row.created_at).toLocaleString()}</td>
                       </tr>
@@ -489,8 +489,8 @@ export default function ClientPortalPage() {
                     filteredOut.map((row) => (
                       <tr key={row.id} className="hover:bg-slate-800/50">
                         <td className="p-3 font-bold text-white">{row.product_name || "N/A"}</td>
-                        <td className="p-3 capitalize text-indigo-300">{row.component_type}</td>
-                        <td className="p-3 font-mono font-bold text-amber-400">-{row.quantity} Pcs</td>
+                        <td className="p-3 uppercase text-indigo-300">{row.component_type}</td>
+                        <td className="p-3 font-mono font-bold text-amber-400">{row.quantity} Pcs</td>
                         <td className="p-3 text-slate-300">{row.remarks || "—"}</td>
                         <td className="p-3 text-slate-400">{new Date(row.created_at).toLocaleString()}</td>
                       </tr>
@@ -508,7 +508,7 @@ export default function ClientPortalPage() {
                     filteredBal.map((row) => (
                       <tr key={row.id} className="hover:bg-slate-800/50">
                         <td className="p-3 font-bold text-white">{row.product_name || "N/A"}</td>
-                        <td className="p-3 capitalize text-indigo-300">{row.component_type}</td>
+                        <td className="p-3 uppercase text-indigo-300">{row.component_type}</td>
                         <td className="p-3 font-mono font-bold text-blue-400">{row.quantity || 0} Pcs</td>
                       </tr>
                     ))
