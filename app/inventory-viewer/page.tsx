@@ -52,7 +52,10 @@ interface ProductBomCapacity {
   capacity_unit: "ML" | "GM" | null;
   products?: {
     product_name: string;
-    parties?: { name: string }[] | null;
+    parties?: { name: string } | { name: string }[] | null;
+  } | {
+    product_name: string;
+    parties?: { name: string } | { name: string }[] | null;
   }[] | null;
 }
 
@@ -120,13 +123,26 @@ export default function WarehouseStaffPortal() {
     if (!["bottle", "tube", "jar"].includes(componentType)) return log.component_type.toUpperCase();
 
     const matchingBom = productBomCapacities.find(
-      (bom) =>
-        bom.component_type.trim().toLowerCase() === componentType &&
-        bom.products?.some(
-          (product) =>
+      (bom) => {
+        if (bom.component_type.trim().toLowerCase() !== componentType) return false;
+
+        const products = Array.isArray(bom.products)
+          ? bom.products
+          : bom.products
+            ? [bom.products]
+            : [];
+        return products.some((product) => {
+          const parties = Array.isArray(product.parties)
+            ? product.parties
+            : product.parties
+              ? [product.parties]
+              : [];
+          return (
             product.product_name.toLowerCase() === log.product_name?.toLowerCase() &&
-            product.parties?.some((party) => party.name.toLowerCase() === log.party_name.toLowerCase())
-        )
+            parties.some((party) => party.name.toLowerCase() === log.party_name.toLowerCase())
+          );
+        });
+      }
     );
     if (!matchingBom?.ml_capacity || (matchingBom.capacity_unit || "ML") !== "ML") {
       return log.component_type.toUpperCase();
