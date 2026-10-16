@@ -91,6 +91,20 @@ interface ProductBomCapacity {
   }[] | null;
 }
 
+interface StockInComponentRow {
+  component_type: string;
+  quantity: string;
+}
+
+const getErrorMessage = (error: unknown) => {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error) {
+    const databaseError = error as { message?: string; details?: string; hint?: string };
+    return [databaseError.message, databaseError.details, databaseError.hint].filter(Boolean).join(" ");
+  }
+  return String(error);
+};
+
 export default function WarehousePortalPage() {
   const [activeTab, setActiveTab] = useState<"requests" | "stock_in" | "stock_out" | "balance">("requests");
   const [loading, setLoading] = useState(false);
@@ -123,8 +137,9 @@ export default function WarehousePortalPage() {
   // Stock IN Form State
   const [selectedPartyId, setSelectedPartyId] = useState("");
   const [selectedProductId, setSelectedProductId] = useState("");
-  const [componentType, setComponentType] = useState("bottle");
-  const [qtyPcs, setQtyPcs] = useState("");
+  const [stockInRows, setStockInRows] = useState<StockInComponentRow[]>([
+    { component_type: "bottle", quantity: "" },
+  ]);
   const [remarks, setRemarks] = useState("");
 
   // Stock OUT Manual Form State
@@ -185,7 +200,11 @@ export default function WarehousePortalPage() {
         const uniqueTypes = Array.from(new Set(bomTypesData.map((b: any) => b.component_type).filter(Boolean)));
         if (uniqueTypes.length > 0) {
           setDynamicComponentTypes(uniqueTypes as string[]);
-          setComponentType(uniqueTypes[0] as string);
+          setStockInRows((rows) =>
+            rows.map((row, index) =>
+              index === 0 ? { ...row, component_type: uniqueTypes[0] as string } : row
+            )
+          );
           setOutComponentType(uniqueTypes[0] as string);
         }
       }
@@ -202,6 +221,14 @@ export default function WarehousePortalPage() {
   const filteredProductsForIn = productsList.filter((p) => p.party_id === inPartyId);
   const filteredProductsForOut = productsList.filter((p) => p.party_id === outPartyId);
   const filteredProductsForBal = productsList.filter((p) => p.party_id === balPartyId);
+
+  const addStockInComponentRow = () => {
+    const usedTypes = new Set(stockInRows.map((row) => row.component_type.toLowerCase()));
+    const nextType = dynamicComponentTypes.find((type) => !usedTypes.has(type.toLowerCase()));
+    if (nextType) {
+      setStockInRows((rows) => [...rows, { component_type: nextType, quantity: "" }]);
+    }
+  };
 
   const exportExcel = (data: any[], fileName: string) => {
     const exportData = data.map((row) =>
@@ -341,86 +368,80 @@ export default function WarehousePortalPage() {
 
   const handleSaveStockIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedPartyId || !selectedProductId || !qtyPcs) {
-      return alert("Please select Party, Product, and enter Quantity.");
+    if (!selectedPartyId || !selectedProductId) {
+      return alert("Please select Party and Product.");
+    }
+    if (
+      stockInRows.length === 0 ||
+      stockInRows.some((row) => !Number.isSafeInteger(Number(row.quantity)) || Number(row.quantity) <= 0)
+    ) {
+      return alert("Please enter a valid whole-number quantity greater than zero for every component.");
+    }
+    const componentTypes = stockInRows.map((row) => row.component_type.trim().toLowerCase());
+    if (componentTypes.some((type, index) => !type || componentTypes.indexOf(type) !== index)) {
+      return alert("Please select a different component type for each row.");
     }
 
     setLoading(true);
     try {
       const partyObj = partiesList.find((p) => p.id === selectedPartyId);
       const prodObj = productsList.find((p) => p.id === selectedProductId);
-      const qtyNum = parseInt(qtyPcs) || 0;
+      if (!partyObj || !prodObj) throw new Error("Selected Party or Product could not be found.");
 
-      const logPayload = {
+      const receivedRows = stockInRows.map((row) => ({
+        componentType: row.component_type,
+        quantity: Number(row.quantity),
+      }));
+      const logPayloads = receivedRows.map((row) => ({
         action_type: "IN",
-        party_name: partyObj?.name || "N/A",
-        product_name: prodObj?.product_name || "N/A",
-        component_type: componentType,
-        quantity: qtyNum,
+        party_name: partyObj.name,
+        product_name: prodObj.product_name,
+        component_type: row.componentType,
+        quantity: row.quantity,
         remarks: remarks || "Stock IN entry in Warehouse",
         created_at: new Date().toISOString(),
-      };
+      }));
 
-      const { error: logErr } = await supabase.from("inventory_logs").insert([logPayload]);
+      const { error: logErr } = await supabase.from("inventory_logs").insert(logPayloads);
       if (logErr) throw logErr;
 
-      const existingStock = stockBalances.find(
-        (s) =>
-          (s.party_id === selectedPartyId || s.party_name?.toLowerCase() === partyObj?.name?.toLowerCase()) &&
-          (s.product_id === selectedProductId || s.product_name?.toLowerCase() === prodObj?.product_name?.toLowerCase()) &&
-          s.component_type?.toLowerCase() === componentType.toLowerCase()
-      );
+      for (const row of receivedRows) {
+        const existingStock = stockBalances.find(
+          (stock) =>
+            (stock.party_id === selectedPartyId || stock.party_name?.toLowerCase() === partyObj.name.toLowerCase()) &&
+            (stock.product_id === selectedProductId || stock.product_name?.toLowerCase() === prodObj.product_name.toLowerCase()) &&
+            stock.component_type?.toLowerCase() === row.componentType.toLowerCase()
+        );
 
-      if (existingStock) {
-        const newQty = existingStock.quantity + qtyNum;
-        await supabase.from("inventory").update({ quantity: newQty }).eq("id", existingStock.id);
-      } else {
-        await supabase.from("inventory").insert([
-          {
-            party_id: selectedPartyId,
-            party_name: partyObj?.name || "N/A",
-            product_id: selectedProductId,
-            product_name: prodObj?.product_name || "N/A",
-            component_type: componentType,
-            quantity: qtyNum,
-          },
-        ]);
+        if (existingStock) {
+          const { error } = await supabase
+            .from("inventory")
+            .update({ quantity: existingStock.quantity + row.quantity })
+            .eq("id", existingStock.id);
+          if (error) throw error;
+        } else {
+          const { error } = await supabase.from("inventory").insert([
+            {
+              party_id: selectedPartyId,
+              party_name: partyObj.name,
+              product_id: selectedProductId,
+              product_name: prodObj.product_name,
+              component_type: row.componentType,
+              quantity: row.quantity,
+            },
+          ]);
+          if (error) throw error;
+        }
       }
 
-      // Sync with inventory_summary table
-      const { data: summaryData } = await supabase
-        .from("inventory_summary")
-        .select("*")
-        .eq("party_id", selectedPartyId)
-        .eq("product_id", selectedProductId)
-        .single();
-
-      if (summaryData) {
-        const currentCompQty = summaryData[componentType] || 0;
-        await supabase
-          .from("inventory_summary")
-          .update({ [componentType]: currentCompQty + qtyNum })
-          .eq("id", summaryData.id);
-      } else {
-        await supabase.from("inventory_summary").insert([
-          {
-            party_id: selectedPartyId,
-            party_name: partyObj?.name || "N/A",
-            product_id: selectedProductId,
-            product_name: prodObj?.product_name || "N/A",
-            [componentType]: qtyNum,
-          },
-        ]);
-      }
-
-      alert("Stock IN recorded successfully & Synced with Filling Incharge!");
+      alert(`Stock IN recorded successfully for ${receivedRows.length} component${receivedRows.length === 1 ? "" : "s"}!`);
       setSelectedPartyId("");
       setSelectedProductId("");
-      setQtyPcs("");
+      setStockInRows([{ component_type: dynamicComponentTypes[0] || "bottle", quantity: "" }]);
       setRemarks("");
       fetchWarehouseAndMasterData();
-    } catch (err: any) {
-      alert("Error: " + err.message);
+    } catch (err: unknown) {
+      alert("Stock IN failed: " + getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -815,7 +836,7 @@ export default function WarehousePortalPage() {
             <div className="bg-[#121827] border border-slate-800 p-4 sm:p-6 rounded-2xl shadow-xl space-y-6">
               <h2 className="text-sm sm:text-md font-bold text-white">Stock IN Portal (Receive Material into Warehouse)</h2>
               <form onSubmit={handleSaveStockIn} className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="text-xs text-slate-400 block mb-1">Select Party / Company</label>
                     <select
@@ -850,45 +871,93 @@ export default function WarehousePortalPage() {
                     </select>
                   </div>
 
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">Component Type (Live Dynamic from DB)</label>
-                    <select
-                      value={componentType}
-                      onChange={(e) => setComponentType(e.target.value)}
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white uppercase"
-                    >
-                      {dynamicComponentTypes.map((type) => (
-                        <option key={type} value={type}>
-                          {type.replace("_", " ").toUpperCase()}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs text-amber-400 block mb-1">Quantity Received (Pcs)</label>
-                    <input
-                      type="number"
-                      value={qtyPcs}
-                      onChange={(e) => setQtyPcs(e.target.value)}
-                      placeholder="e.g. 5000"
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-amber-300 font-mono font-bold"
-                      required
-                    />
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-xs font-semibold text-slate-300">Components &amp; Quantities</h3>
+                    <button
+                      type="button"
+                      onClick={addStockInComponentRow}
+                      disabled={stockInRows.length >= dynamicComponentTypes.length}
+                      className="px-3 py-2 rounded-lg bg-blue-600/20 text-blue-300 border border-blue-500/30 text-xs font-bold hover:bg-blue-600/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      + Add Component
+                    </button>
                   </div>
+                  {stockInRows.map((row, rowIndex) => (
+                    <div key={row.component_type} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-end">
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">
+                          Component Type {rowIndex + 1}
+                        </label>
+                        <select
+                          value={row.component_type}
+                          onChange={(event) =>
+                            setStockInRows((rows) =>
+                              rows.map((item, index) =>
+                                index === rowIndex ? { ...item, component_type: event.target.value } : item
+                              )
+                            )
+                          }
+                          className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white uppercase"
+                          required
+                        >
+                          {dynamicComponentTypes.map((type) => (
+                            <option
+                              key={type}
+                              value={type}
+                              disabled={stockInRows.some(
+                                (item, index) =>
+                                  index !== rowIndex && item.component_type.toLowerCase() === type.toLowerCase()
+                              )}
+                            >
+                              {type.replace("_", " ").toUpperCase()}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-amber-400 block mb-1">Quantity Received (Pcs)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={row.quantity}
+                          onChange={(event) =>
+                            setStockInRows((rows) =>
+                              rows.map((item, index) =>
+                                index === rowIndex ? { ...item, quantity: event.target.value } : item
+                              )
+                            )
+                          }
+                          placeholder="e.g. 5000"
+                          className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-amber-300 font-mono font-bold"
+                          required
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setStockInRows((rows) => rows.filter((_, index) => index !== rowIndex))}
+                        disabled={stockInRows.length === 1}
+                        aria-label={`Remove component row ${rowIndex + 1}`}
+                        className="px-3 py-3 rounded-lg bg-rose-600/20 text-rose-300 border border-rose-500/30 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
 
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">Remarks / Note</label>
-                    <input
-                      type="text"
-                      value={remarks}
-                      onChange={(e) => setRemarks(e.target.value)}
-                      placeholder="Supplier details or batch info"
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
-                    />
-                  </div>
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Remarks / Note</label>
+                  <input
+                    type="text"
+                    value={remarks}
+                    onChange={(e) => setRemarks(e.target.value)}
+                    placeholder="Supplier details or batch info"
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                  />
                 </div>
 
                 <button
