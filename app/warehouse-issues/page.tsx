@@ -42,6 +42,12 @@ interface FillingRequest {
   pack_size?: number | null;
   pack_unit?: "ML" | "GM" | string | null;
   room_number?: number | null;
+  master_carton_count?: number | null;
+  master_carton_pcs?: number | null;
+  plan_pcs?: number;
+  nigehban_pcs?: number;
+  source_warehouse?: string | null;
+  source_warehouse_party_id?: string | null;
   party_id?: string;
   product_id?: string;
   party_name: string;
@@ -708,7 +714,7 @@ export default function WarehousePortalPage() {
                     onClick={() =>
                       exportPDFWithLogo(
                         "Warehouse Filling Requests Log",
-                        ["Batch No", "Mfg/Exp", "Price", "Party", "Product", "Pack Size", "Room", "Pcs", "Target Wt", "Scale Wt", "Dates", "Status"],
+                        ["Batch No", "Mfg/Exp", "Price", "Party", "Product", "Pack Size", "Room", "Pcs", "Cartons", "Pcs/Carton", "Plan Pcs", "Nigehban Pcs", "Source Warehouse", "Target Wt", "Scale Wt", "Dates", "Status"],
                         filteredRequests.map((f) => [
                           f.batch_no || f.req_code || "N/A",
                           `Mfg: ${f.mfg_date}\nExp: ${f.exp_date}`,
@@ -718,6 +724,11 @@ export default function WarehousePortalPage() {
                           f.pack_size ? `${f.pack_size} ${f.pack_unit || "ML"}` : "N/A",
                           f.room_number ? `Room ${f.room_number}` : "N/A",
                           f.pcs_requested,
+                          f.master_carton_count ?? "N/A",
+                          f.master_carton_pcs ?? "N/A",
+                          f.plan_pcs ?? 0,
+                          f.nigehban_pcs ?? 0,
+                          f.source_warehouse || "N/A",
                           `${(f.total_weight_kg || 0).toFixed(2)} Kg`,
                           f.actual_dispatched_weight_kg ? `${f.actual_dispatched_weight_kg.toFixed(2)} Kg` : "Pending",
                           `Req: ${f.required_date || "-"}\nSent: ${f.requested_at ? new Date(f.requested_at).toLocaleDateString() : "-"}\nDisp: ${f.dispatched_at || "-"}\nRecv: ${f.received_at || "-"}`,
@@ -742,6 +753,7 @@ export default function WarehousePortalPage() {
                         <th className="p-3">Pack Size</th>
                         <th className="p-3">Room</th>
                         <th className="p-3">Pcs</th>
+                        <th className="p-3">Packaging / Allocation / Source</th>
                         <th className="p-3 text-indigo-400">Target Wt</th>
                         <th className="p-3 text-amber-400">Scale Wt</th>
                         <th className="p-3">All Dates & Status</th>
@@ -767,6 +779,11 @@ export default function WarehousePortalPage() {
                             {req.room_number ? `Room ${req.room_number}` : "N/A"}
                           </td>
                           <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{req.pcs_requested} Pcs</td>
+                          <td className="p-3 text-[10px] text-slate-300 whitespace-nowrap">
+                            <div>Cartons: {req.master_carton_count ?? "—"} × {req.master_carton_pcs ?? "—"} pcs</div>
+                            <div>Plan: {req.plan_pcs ?? 0} | Nigehban: {req.nigehban_pcs ?? 0} pcs</div>
+                            <div>Source: {req.source_warehouse || "—"}</div>
+                          </td>
                           <td className="p-3 font-mono font-bold text-indigo-300 whitespace-nowrap">
                             {(req.total_weight_kg || 0).toFixed(2)} Kg
                           </td>

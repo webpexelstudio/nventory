@@ -1,18 +1,11 @@
 "use client";
 
+/* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/exhaustive-deps, react-hooks/set-state-in-effect, react-hooks/immutability, prefer-const */
+
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
-import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
-
-const COMPANY_DETAILS = {
-  name: "WEB PEXEL STUDIO / NIGEHBAN HEALTHCARE",
-  address: "Gulistan-e-Johar, Karachi, Pakistan",
-  contact: "Ph: +92 315 0274582 | Email: rizwanmadni517@gmail.com",
-  logoPath: "/logo.png",
-};
 
 interface Party {
   id: string;
@@ -51,6 +44,90 @@ interface AssemblingRow {
   weight_10_pcs_grams: string;
 }
 
+interface MasterCartonProductSetting {
+  product_id: string;
+  product_name: string;
+  party_name: string;
+  carton_count: number;
+}
+
+interface MasterCartonOption {
+  id: string;
+  carton_count: number;
+  alert_threshold?: number | null;
+}
+
+interface ComponentTypeOption {
+  component_type: string;
+}
+
+interface MasterCartonProductSettingRow {
+  product_id: string;
+  carton_count: number;
+  products: {
+    product_name: string;
+    parties: { name: string }[] | null;
+  }[];
+}
+
+const normalizeComponentTypeKey = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_{2,}/g, "_");
+
+const formatComponentTypeLabel = (value: string) =>
+  value
+    .trim()
+    .replace(/[_\-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+
+const getAssignedPartyLabel = (partyName?: string) => {
+  const normalized = (partyName ?? "").trim();
+  if (!normalized) return "PARTY";
+  return normalized.toLowerCase().includes("nigehban") ? "NIGEHBAN" : normalized.toUpperCase();
+};
+
+const formatDatabaseError = (error: unknown) => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null) {
+    const details = error as Record<string, unknown>;
+    const message = typeof details.message === "string" ? details.message : "";
+    const code = typeof details.code === "string" ? ` (${details.code})` : "";
+    const detail = typeof details.details === "string" ? ` ${details.details}` : "";
+    const hint = typeof details.hint === "string" ? ` Hint: ${details.hint}` : "";
+    if (message || detail || hint) return `${message}${code}${detail}${hint}`.trim();
+    return JSON.stringify(error);
+  }
+  return String(error);
+};
+
+const resolveComponentTypeFieldName = async (): Promise<"component_type" | "name"> => {
+  const { error } = await supabase.from("component_type_options").select("component_type").limit(1);
+  if (!error) return "component_type";
+
+  const message = (error.message ?? "").toLowerCase();
+  if (message.includes("column") && message.includes("component_type")) {
+    const { error: legacyError } = await supabase.from("component_type_options").select("name").limit(1);
+    if (!legacyError) return "name";
+    throw legacyError;
+  }
+
+  throw error;
+};
+
+const normalizeComponentTypeOptionValue = (option: { component_type?: string | null; name?: string | null } | null) => {
+  const rawValue = typeof option?.component_type === "string"
+    ? option.component_type
+    : typeof option?.name === "string"
+      ? option.name
+      : "";
+  return rawValue.trim().toLowerCase();
+};
+
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState<
     | "setup"
@@ -58,6 +135,7 @@ export default function AdminPage() {
     | "products"
     | "assembling"
     | "filling"
+    | "master_cartons"
     | "warehouse"
     | "inventory"
     | "client_access"
@@ -71,6 +149,14 @@ export default function AdminPage() {
   const [warehouseLogs, setWarehouseLogs] = useState<any[]>([]);
   const [inventoryList, setInventoryList] = useState<any[]>([]);
   const [partyAccessList, setPartyAccessList] = useState<any[]>([]);
+  const [masterCartonSettings, setMasterCartonSettings] = useState<MasterCartonProductSetting[]>([]);
+  const [masterCartonSettingsError, setMasterCartonSettingsError] = useState<string | null>(null);
+  const [editingMasterCartonProductId, setEditingMasterCartonProductId] = useState<string | null>(null);
+  const [editingMasterCartonCount, setEditingMasterCartonCount] = useState("");
+  const [masterCartonOptions, setMasterCartonOptions] = useState<MasterCartonOption[]>([]);
+  const [masterCartonOptionsError, setMasterCartonOptionsError] = useState<string | null>(null);
+  const [newMasterCartonOption, setNewMasterCartonOption] = useState("");
+  const [newMasterCartonAlertThreshold, setNewMasterCartonAlertThreshold] = useState("0");
 
   // Admin View Party Live Portal State
   const [selectedPartyForView, setSelectedPartyForView] = useState("");
@@ -98,7 +184,14 @@ export default function AdminPage() {
     "tube",
     "pump",
     "nozzle",
+    "box",
+    "leaflets",
+    "jar",
+    "glass_pipe",
+    "dropper",
   ]);
+  const [savedComponentTypes, setSavedComponentTypes] = useState<string[]>([]);
+  const [componentTypesError, setComponentTypesError] = useState<string | null>(null);
   const [newTypeName, setNewTypeName] = useState("");
   const [showAddTypeModal, setShowAddTypeModal] = useState(false);
 
@@ -126,8 +219,11 @@ export default function AdminPage() {
   const [filterEndDate, setFilterEndDate] = useState("");
   const [filterWarehouseAction, setFilterWarehouseAction] = useState<"ALL" | "IN" | "OUT">("ALL");
 
+  let fetchMasterData: () => Promise<void>;
+  let fetchAdminPartyViewData: (partyId: string) => Promise<void>;
+
   useEffect(() => {
-    fetchMasterData();
+    void fetchMasterData();
   }, []);
 
   useEffect(() => {
@@ -180,13 +276,36 @@ export default function AdminPage() {
   }, [partiesList, selectedPartyForView]);
 
   useEffect(() => {
-    if (selectedPartyForView) {
-      fetchAdminPartyViewData(selectedPartyForView);
-    } else {
+    if (!selectedPartyForView) {
       setPartyWarehouseLogs([]);
       setPartyInventoryStock([]);
+      return;
     }
+
+    void fetchAdminPartyViewData(selectedPartyForView);
   }, [selectedPartyForView]);
+
+  useEffect(() => {
+    if (!selectedProductForBom) {
+      setAssemblingRows([createDefaultAssemblingRow()]);
+      return;
+    }
+
+    const existingRows = bomViewList.filter((bom) => bom.product_id === selectedProductForBom);
+    if (existingRows.length > 0) {
+      setAssemblingRows(
+        existingRows.map((bom) => ({
+          component_type: bom.component_type,
+          ml_capacity: bom.ml_capacity == null ? "" : String(bom.ml_capacity),
+          capacity_unit: bom.capacity_unit === "GM" ? "GM" : "ML",
+          weight_10_pcs_grams: bom.weight_10_pcs_grams == null ? "" : String(bom.weight_10_pcs_grams),
+        }))
+      );
+      return;
+    }
+
+    setAssemblingRows([createDefaultAssemblingRow()]);
+  }, [selectedProductForBom, bomViewList]);
 
   const handlePrintFillingRequest = async (
     request: any,
@@ -364,7 +483,7 @@ export default function AdminPage() {
     setPrintQuantity("");
   };
 
-  const fetchMasterData = async () => {
+  fetchMasterData = async () => {
     setLoading(true);
     try {
       const { data: partyData } = await supabase.from("parties").select("*").order("name");
@@ -383,8 +502,26 @@ export default function AdminPage() {
         setBomViewList(bomData as any);
         const extractedTypes = Array.from(new Set(bomData.map((item: any) => item.component_type)));
         if (extractedTypes.length > 0) {
-          setComponentTypes((prev) => Array.from(new Set([...prev, ...extractedTypes])));
+          setComponentTypes((prev) =>
+            Array.from(new Set([...prev, ...extractedTypes.map((type) => type.trim().toLowerCase())]))
+          );
         }
+      }
+
+      const componentTypeFieldName = await resolveComponentTypeFieldName();
+      const { data: savedTypes, error: savedTypesError } = await supabase
+        .from("component_type_options")
+        .select(componentTypeFieldName)
+        .order(componentTypeFieldName);
+      if (savedTypesError) {
+        setComponentTypesError(savedTypesError.message);
+      } else {
+        const savedTypeNames = ((savedTypes ?? []) as Array<{ component_type?: string | null; name?: string | null }> )
+          .map((option) => normalizeComponentTypeOptionValue(option))
+          .filter(Boolean);
+        setSavedComponentTypes(savedTypeNames);
+        setComponentTypesError(null);
+        setComponentTypes((current) => Array.from(new Set([...current, ...savedTypeNames])));
       }
 
       const { data: fillingData, error: fillingError } = await supabase
@@ -410,6 +547,37 @@ export default function AdminPage() {
         .select("*, parties(id, name)")
         .order("created_at", { ascending: false });
       if (accessData) setPartyAccessList(accessData);
+
+      const { data: cartonSettings, error: cartonSettingsError } = await supabase
+        .from("master_carton_product_settings")
+        .select("product_id, carton_count, products(product_name, parties(name))")
+        .order("carton_count");
+      if (cartonSettingsError) {
+        setMasterCartonSettingsError(cartonSettingsError.message);
+        throw cartonSettingsError;
+      }
+      setMasterCartonSettingsError(null);
+      const settingRows = (cartonSettings ?? []) as MasterCartonProductSettingRow[];
+      setMasterCartonSettings(settingRows.map((setting) => {
+        const product = setting.products[0];
+        return {
+          product_id: setting.product_id,
+          carton_count: setting.carton_count,
+          product_name: product?.product_name ?? "Unknown product",
+          party_name: product?.parties?.[0]?.name ?? "Unknown party",
+        };
+      }));
+
+      const { data: cartonOptions, error: cartonOptionsError } = await supabase
+        .from("master_carton_options")
+        .select("id, carton_count, alert_threshold")
+        .order("carton_count");
+      if (cartonOptionsError) {
+        setMasterCartonOptionsError(cartonOptionsError.message);
+        throw cartonOptionsError;
+      }
+      setMasterCartonOptionsError(null);
+      setMasterCartonOptions(cartonOptions ?? []);
     } catch (err: any) {
       console.error(err);
     } finally {
@@ -417,7 +585,112 @@ export default function AdminPage() {
     }
   };
 
-  const fetchAdminPartyViewData = async (partyId: string) => {
+  const handleAddMasterCartonOption = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const cartonCount = Number(newMasterCartonOption);
+    const alertThreshold = Number(newMasterCartonAlertThreshold);
+    if (!Number.isSafeInteger(cartonCount) || cartonCount <= 0) {
+      alert("Please enter a whole number greater than zero.");
+      return;
+    }
+    if (!Number.isSafeInteger(alertThreshold) || alertThreshold < 0) {
+      alert("Alert threshold must be zero or a positive whole number.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("master_carton_options")
+        .insert({ carton_count: cartonCount, alert_threshold: alertThreshold })
+        .select("id, carton_count, alert_threshold")
+        .single();
+      if (error) throw error;
+      if (!data) throw new Error("The database did not return the new carton option.");
+      setMasterCartonOptions((current) =>
+        [...current, data].sort((a, b) => a.carton_count - b.carton_count)
+      );
+      setNewMasterCartonOption("");
+      setNewMasterCartonAlertThreshold("0");
+      setMasterCartonOptionsError(null);
+    } catch (err: unknown) {
+      console.error("Could not add Master Carton option:", err);
+      alert("Could not add Master Carton option: " + formatDatabaseError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteMasterCartonOption = async (option: MasterCartonOption) => {
+    if (!confirm(`Remove ${option.carton_count} cartons from the Filling dropdown?`)) return;
+    setLoading(true);
+    try {
+      const { error } = await supabase
+        .from("master_carton_options")
+        .delete()
+        .eq("id", option.id);
+      if (error) throw error;
+      setMasterCartonOptions((current) => current.filter((item) => item.id !== option.id));
+    } catch (err: unknown) {
+      console.error("Could not remove Master Carton option:", err);
+      alert("Could not remove Master Carton option: " + formatDatabaseError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSaveMasterCartonSetting = async (setting: MasterCartonProductSetting) => {
+    const cartonCount = Number(editingMasterCartonCount);
+    if (!Number.isSafeInteger(cartonCount) || cartonCount <= 0) {
+      alert("Please enter a whole number of cartons greater than zero.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("master_carton_product_settings")
+        .update({ carton_count: cartonCount, updated_at: new Date().toISOString() })
+        .eq("product_id", setting.product_id)
+        .select("product_id, carton_count")
+        .single();
+      if (error) throw error;
+      if (!data) throw new Error("The database did not return the updated carton count.");
+      setMasterCartonSettings((current) =>
+        current.map((item) =>
+          item.product_id === setting.product_id ? { ...item, carton_count: data.carton_count } : item
+        )
+      );
+      setEditingMasterCartonProductId(null);
+    } catch (err: unknown) {
+      console.error("Could not update Master Carton setting:", err);
+      alert("Could not update Master Carton setting: " + formatDatabaseError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteMasterCartonSetting = async (setting: MasterCartonProductSetting) => {
+    if (!confirm(`Remove the saved carton count for ${setting.party_name} / ${setting.product_name}?`)) return;
+    setLoading(true);
+    try {
+      const { error } = await supabase
+        .from("master_carton_product_settings")
+        .delete()
+        .eq("product_id", setting.product_id);
+      if (error) throw error;
+      setMasterCartonSettings((current) =>
+        current.filter((item) => item.product_id !== setting.product_id)
+      );
+    } catch (err: unknown) {
+      console.error("Could not remove Master Carton setting:", err);
+      alert("Could not remove Master Carton setting: " + formatDatabaseError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  fetchAdminPartyViewData = async (partyId: string) => {
     try {
       const selectedPartyName = partiesList.find((party) => party.id === partyId)?.name;
       if (!selectedPartyName) return;
@@ -598,17 +871,67 @@ export default function AdminPage() {
 
     const duplicateType = getDuplicateComponentTypesInDraft(nextRows)[0];
     if (duplicateType) {
-      alert(`Component "${duplicateType.replace("_", " ").toUpperCase()}" is already added in this item. Please choose a different component type.`);
+      alert(`Component "${formatComponentTypeLabel(duplicateType)}" is already added in this item. Please choose a different component type.`);
       return;
     }
 
     setAssemblingRows(nextRows);
   };
 
-  const handleRemoveAssemblingRow = (index: number) => {
+  const handleRemoveAssemblingRow = async (index: number) => {
+    const row = assemblingRows[index];
     const list = [...assemblingRows];
     list.splice(index, 1);
-    setAssemblingRows(list);
+
+    if (selectedProductForBom && row?.component_type) {
+      const savedMatch = bomViewList.find(
+        (bom) =>
+          bom.product_id === selectedProductForBom &&
+          bom.component_type.trim().toLowerCase() === row.component_type.trim().toLowerCase()
+      );
+
+      if (savedMatch) {
+        setLoading(true);
+        try {
+          const { error } = await supabase.from("product_bom").delete().eq("id", savedMatch.id);
+          if (error) throw error;
+          alert(`Component "${formatComponentTypeLabel(row.component_type)}" removed from this product.`);
+          await fetchMasterData();
+        } catch (err: unknown) {
+          console.error("Could not remove product BOM item:", err);
+          alert("Could not remove product BOM item: " + formatDatabaseError(err));
+        } finally {
+          setLoading(false);
+        }
+      }
+    }
+
+    setAssemblingRows(list.length > 0 ? list : [createDefaultAssemblingRow()]);
+  };
+
+  const handleDeleteSavedBomType = async (componentType: string) => {
+    if (!selectedProductForBom) return;
+
+    const match = bomViewList.find(
+      (bom) =>
+        bom.product_id === selectedProductForBom &&
+        bom.component_type.trim().toLowerCase() === componentType.trim().toLowerCase()
+    );
+
+    if (!match) return;
+    if (!confirm(`Remove "${formatComponentTypeLabel(componentType)}" from this product?`)) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.from("product_bom").delete().eq("id", match.id);
+      if (error) throw error;
+      await fetchMasterData();
+    } catch (err: unknown) {
+      console.error("Could not delete saved BOM type:", err);
+      alert("Could not delete saved BOM type: " + formatDatabaseError(err));
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleRowChange = <K extends keyof AssemblingRow,>(index: number, field: K, value: AssemblingRow[K]) => {
@@ -617,13 +940,13 @@ export default function AdminPage() {
 
     if (field === "component_type") {
       if (selectedProductForBom && isComponentTypeAlreadySavedForProduct(selectedProductForBom, value)) {
-        alert(`Component "${value.replace("_", " ").toUpperCase()}" is already added for this product.`);
+        alert(`Component "${formatComponentTypeLabel(value)}" is already added for this product.`);
         return;
       }
 
       const duplicateType = getDuplicateComponentTypesInDraft(updated)[0];
       if (duplicateType) {
-        alert(`Component "${duplicateType.replace("_", " ").toUpperCase()}" is already added in this item. Please choose a different component type.`);
+        alert(`Component "${formatComponentTypeLabel(duplicateType)}" is already added in this item. Please choose a different component type.`);
         return;
       }
     }
@@ -631,19 +954,90 @@ export default function AdminPage() {
     setAssemblingRows(updated);
   };
 
-  const handleAddNewComponentType = () => {
-    if (!newTypeName.trim()) return;
-    const formatted = newTypeName.trim().toLowerCase().replace(/\s+/g, "_");
-    if (!componentTypes.includes(formatted)) {
-      setComponentTypes([...componentTypes, formatted]);
+  const handleAddNewComponentType = async () => {
+    const cleanedInput = newTypeName.trim();
+    if (!cleanedInput) return;
+
+    const formatted = normalizeComponentTypeKey(cleanedInput);
+    if (!formatted) {
+      alert("Use only letters, numbers, spaces, hyphens, or underscores in a component name.");
+      return;
     }
-    setNewTypeName("");
-    setShowAddTypeModal(false);
+
+    const normalizedFormatted = formatted.toLowerCase();
+    const alreadyExists = [...savedComponentTypes, ...componentTypes].some(
+      (type) => type.trim().toLowerCase() === normalizedFormatted
+    );
+    if (alreadyExists) {
+      alert("This component type is already in the list.");
+      setNewTypeName("");
+      setShowAddTypeModal(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const componentTypeFieldName = await resolveComponentTypeFieldName();
+      const { data: existingType, error: existingTypeError } = await supabase
+        .from("component_type_options")
+        .select(componentTypeFieldName)
+        .eq(componentTypeFieldName, normalizedFormatted)
+        .maybeSingle();
+
+      if (existingTypeError) throw existingTypeError;
+      if (existingType) {
+        setSavedComponentTypes((current) => Array.from(new Set([...current, normalizedFormatted])).sort());
+        setComponentTypes((current) => Array.from(new Set([...current, normalizedFormatted])));
+        setComponentTypesError(null);
+        setNewTypeName("");
+        setShowAddTypeModal(false);
+        return;
+      }
+
+      const { error } = await supabase
+        .from("component_type_options")
+        .insert({ [componentTypeFieldName]: normalizedFormatted } as Record<string, string>);
+      if (error) throw error;
+      setSavedComponentTypes((current) =>
+        Array.from(new Set([...current, normalizedFormatted])).sort()
+      );
+      setComponentTypes((current) =>
+        Array.from(new Set([...current, normalizedFormatted]))
+      );
+      setComponentTypesError(null);
+      setNewTypeName("");
+      setShowAddTypeModal(false);
+    } catch (err: unknown) {
+      console.error("Could not save component type option:", err);
+      alert("Could not save component type option: " + formatDatabaseError(err));
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleDeleteComponentTypeOption = (typeToRemove: string) => {
-    if (confirm(`Remove component option "${typeToRemove.replace("_", " ").toUpperCase()}"?`)) {
-      setComponentTypes(componentTypes.filter((t) => t !== typeToRemove));
+  const handleDeleteComponentTypeOption = async (typeToRemove: string) => {
+    if (!confirm(`Remove component option "${formatComponentTypeLabel(typeToRemove)}"?`)) return;
+    setLoading(true);
+    try {
+      const componentTypeFieldName = await resolveComponentTypeFieldName();
+      const { error } = await supabase
+        .from("component_type_options")
+        .delete()
+        .eq(componentTypeFieldName, typeToRemove);
+      if (error) throw error;
+      setSavedComponentTypes((current) => current.filter((type) => type !== typeToRemove));
+      const isUsedInBom = bomViewList.some(
+        (bom) => bom.component_type.trim().toLowerCase() === typeToRemove
+      );
+      if (!isUsedInBom) {
+        setComponentTypes((current) => current.filter((type) => type !== typeToRemove));
+      }
+      setComponentTypesError(null);
+    } catch (err: unknown) {
+      console.error("Could not remove component type option:", err);
+      alert("Could not remove component type option: " + formatDatabaseError(err));
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -655,7 +1049,7 @@ export default function AdminPage() {
 
     const duplicateType = getDuplicateComponentTypesInDraft(assemblingRows)[0];
     if (duplicateType) {
-      return alert(`Component "${duplicateType.replace("_", " ").toUpperCase()}" is already added in this item. Please choose a different component type.`);
+      return alert(`Component "${formatComponentTypeLabel(duplicateType)}" is already added in this item. Please choose a different component type.`);
     }
 
     const incompleteRow = assemblingRows.find((row) => !row.component_type || !row.weight_10_pcs_grams || (row.ml_capacity === "" && row.capacity_unit === "ML"));
@@ -674,15 +1068,16 @@ export default function AdminPage() {
       const existingComponentTypes = new Set(
         (existingBomRows ?? []).map((row) => row.component_type.trim().toLowerCase())
       );
-      const alreadySavedType = assemblingRows.find((row) =>
-        existingComponentTypes.has(row.component_type.trim().toLowerCase())
-      )?.component_type;
-      if (alreadySavedType) {
-        alert(`Component "${alreadySavedType.replace("_", " ").toUpperCase()}" is already added for this product.`);
+      const newRows = assemblingRows.filter(
+        (row) => !existingComponentTypes.has(row.component_type.trim().toLowerCase())
+      );
+
+      if (newRows.length === 0) {
+        alert("This product already has all these component types saved. Add a new component to continue.");
         return;
       }
 
-      const payload = assemblingRows.map((row) => ({
+      const payload = newRows.map((row) => ({
         product_id: selectedProductForBom,
         component_type: row.component_type,
         ml_capacity: row.ml_capacity ? parseFloat(row.ml_capacity) : 0,
@@ -810,6 +1205,25 @@ export default function AdminPage() {
   };
 
   const availableProductsForBom = productsList.filter((p) => p.party_id === selectedPartyForBom);
+  const selectedProductSavedBomTypes = selectedProductForBom
+    ? Array.from(
+        new Set(
+          bomViewList
+            .filter((bom) => bom.product_id === selectedProductForBom)
+            .map((bom) => bom.component_type.trim().toLowerCase())
+            .filter(Boolean)
+        )
+      )
+    : [];
+  const partyProductCounts = partiesList.reduce<Record<string, number>>((acc, party) => {
+    acc[party.id] = productsList.filter((product) => product.party_id === party.id).length;
+    return acc;
+  }, {});
+  const selectedBomParty = partiesList.find((party) => party.id === selectedPartyForBom);
+  const selectedBomWarehouseLabel = getAssignedPartyLabel(selectedBomParty?.name);
+  const defaultWarehousePartyLabel = getAssignedPartyLabel(
+    partiesList.find((party) => party.name.toLowerCase().includes("nigehban"))?.name ?? partiesList[0]?.name
+  );
   const filteredParties = partiesList.filter((p) => filterByDateAndText(p.created_at, p.name));
   const filteredProducts = productsList.filter((prod) =>
     filterByDateAndText(prod.created_at, prod.parties?.name, prod.product_name)
@@ -936,6 +1350,7 @@ export default function AdminPage() {
           <button onClick={() => setActiveTab("products")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "products" ? "bg-purple-700 text-white" : "text-slate-400 hover:text-white"}`}>Products ({productsList.length})</button>
           <button onClick={() => setActiveTab("assembling")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "assembling" ? "bg-purple-700 text-white" : "text-slate-400 hover:text-white"}`}>BOM Assembling</button>
           <button onClick={() => setActiveTab("filling")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "filling" ? "bg-amber-600 text-white" : "text-slate-400 hover:text-white"}`}>Filling Log</button>
+          <button onClick={() => setActiveTab("master_cartons")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "master_cartons" ? "bg-cyan-700 text-white" : "text-slate-400 hover:text-white"}`}>Master Cartons</button>
           <button onClick={() => setActiveTab("warehouse")} className={`px-3 py-2 rounded-lg font-bold transition uppercase ${activeTab === "warehouse" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}>Warehouse IN/OUT</button>
           <button onClick={() => setActiveTab("inventory")} className={`px-3 py-2 rounded-lg font-bold transition uppercase ${activeTab === "inventory" ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-white"}`}>Total Inventory</button>
           <button onClick={() => setActiveTab("client_access")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "client_access" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"}`}>Client Portal Access</button>
@@ -993,12 +1408,38 @@ export default function AdminPage() {
               </div>
 
               <div className="bg-[#0b0f19] p-3 rounded-lg border border-slate-800 space-y-2">
-                <span className="text-[11px] text-slate-400 font-semibold uppercase">Available Component Types:</span>
+                {componentTypesError && (
+                  <p className="text-[11px] text-rose-400">
+                    Could not load saved component options: {componentTypesError}
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  {savedComponentTypes.map((type) => (
+                    <span key={type} className="bg-slate-800 text-amber-300 border border-slate-700 px-2.5 py-1 rounded-md text-xs flex items-center gap-2 uppercase">
+                      {formatComponentTypeLabel(type)}
+                      <button type="button" onClick={() => handleDeleteComponentTypeOption(type)} disabled={loading} aria-label={`Remove ${formatComponentTypeLabel(type)} component option`} className="text-rose-400 hover:text-rose-200 font-bold ml-1">×</button>
+                    </span>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between gap-3 pt-2">
+                  <span className="text-[11px] text-slate-400 font-semibold uppercase">Available Component Types:</span>
+                  <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-amber-200">
+                    {selectedBomWarehouseLabel}
+                  </span>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {componentTypes.map((type) => (
-                    <span key={type} className="bg-slate-800 text-amber-300 border border-slate-700 px-2.5 py-1 rounded-md text-xs flex items-center gap-2 uppercase">
-                      {type.replace("_", " ")}
-                      <button type="button" onClick={() => handleDeleteComponentTypeOption(type)} className="text-rose-400 hover:text-rose-200 font-bold ml-1">×</button>
+                    <span key={type} className="bg-slate-800/60 text-slate-300 border border-slate-700 px-2.5 py-1 rounded-md text-xs flex items-center gap-2 uppercase">
+                      {formatComponentTypeLabel(type)}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteComponentTypeOption(type)}
+                        disabled={loading}
+                        aria-label={`Remove ${formatComponentTypeLabel(type)} component`}
+                        className="text-rose-400 hover:text-rose-200 font-bold"
+                      >
+                        ×
+                      </button>
                     </span>
                   ))}
                 </div>
@@ -1021,6 +1462,41 @@ export default function AdminPage() {
                 </div>
               </div>
 
+              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
+                <div className="flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.18em] text-emerald-300">
+                  <span>Warehouse / Source Party</span>
+                  <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-200">{selectedBomWarehouseLabel}</span>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-300">
+                  Components and carton values for this product will follow the selected party source, and the same warehouse flow will stay linked to {selectedBomWarehouseLabel}.
+                </p>
+              </div>
+
+              {selectedProductSavedBomTypes.length > 0 && (
+                <div className="rounded-2xl border border-amber-500/30 bg-gradient-to-r from-[#1a2238] via-[#101a2d] to-[#111827] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-amber-300">Previously saved for this product</p>
+                    <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-amber-200">
+                      {selectedProductSavedBomTypes.length} saved
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedProductSavedBomTypes.map((type) => (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => handleDeleteSavedBomType(type)}
+                        className="group inline-flex items-center gap-2 rounded-full border border-amber-500/40 bg-[#0f172a] px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-wide text-amber-200 shadow-sm transition duration-200 hover:border-rose-500/60 hover:bg-rose-500/10 hover:text-rose-200"
+                        aria-label={`Remove ${formatComponentTypeLabel(type)} from this product`}
+                      >
+                        <span>{formatComponentTypeLabel(type)}</span>
+                        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-rose-500/20 text-[10px] font-bold text-rose-300 transition group-hover:bg-rose-500/30">×</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="flex justify-between items-center pt-2">
                 <span className="text-xs font-semibold tracking-wider text-slate-400 uppercase">ASSEMBLING COMPONENTS BREAKDOWN:</span>
                 <button type="button" onClick={handleAddAssemblingRow} className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg">+ Add Row</button>
@@ -1033,7 +1509,7 @@ export default function AdminPage() {
                     <div className="flex-1 w-full">
                       <label className="block text-[10px] text-slate-500 mb-1">Component Type</label>
                       <select value={row.component_type} onChange={(e) => handleRowChange(index, "component_type", e.target.value)} className="w-full bg-[#121827] border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 uppercase" required>
-                        {componentTypes.map((t) => (<option key={t} value={t}>{t.replace("_", " ").toUpperCase()}</option>))}
+                        {componentTypes.map((t) => (<option key={t} value={t}>{formatComponentTypeLabel(t)}</option>))}
                       </select>
                     </div>
                     <div className="flex-1 w-full">
@@ -1059,6 +1535,187 @@ export default function AdminPage() {
           </div>
         )}
 
+        {activeTab === "master_cartons" && (
+          <div className="bg-[#121827] border border-slate-800 rounded-xl p-6 shadow-lg space-y-5">
+            <div>
+              <h2 className="text-md font-semibold text-slate-200">Master Carton Setup</h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Add carton-count choices here for the Filling dropdown. Product defaults saved by Filling can be managed below.
+              </p>
+              <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-200">
+                Assigned warehouse: {defaultWarehousePartyLabel}
+              </div>
+            </div>
+            <form onSubmit={handleAddMasterCartonOption} className="flex flex-col gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={newMasterCartonOption}
+                  onChange={(event) => setNewMasterCartonOption(event.target.value)}
+                  placeholder="Enter carton number"
+                  aria-label="New carton number option"
+                  className="bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200"
+                  required
+                />
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={newMasterCartonAlertThreshold}
+                  onChange={(event) => setNewMasterCartonAlertThreshold(event.target.value)}
+                  placeholder="Alert threshold (e.g. 5)"
+                  aria-label="Master carton alert threshold"
+                  className="bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="bg-cyan-700 hover:bg-cyan-800 text-white font-medium px-5 py-2 rounded-lg text-sm w-fit"
+              >
+                Add Carton Option
+              </button>
+            </form>
+            {masterCartonOptionsError && (
+              <p className="text-xs text-rose-400">
+                Could not load carton dropdown options: {masterCartonOptionsError}
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              {masterCartonOptions.map((option) => {
+                const threshold = option.alert_threshold ?? 0;
+                const isLowAlert = threshold > 0 && option.carton_count <= threshold;
+                return (
+                  <span
+                    key={option.id}
+                    className={`border px-3 py-2 rounded-lg text-sm flex items-center gap-3 ${
+                      isLowAlert
+                        ? "bg-rose-500/10 text-rose-200 border-rose-500/40"
+                        : "bg-slate-800 text-cyan-300 border-slate-700"
+                    }`}
+                  >
+                    <span>
+                      {option.carton_count} cartons
+                      <span className="ml-2 text-[10px] uppercase tracking-[0.14em] text-slate-300">
+                        alert ≤ {threshold}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteMasterCartonOption(option)}
+                      disabled={loading}
+                      aria-label={`Remove ${option.carton_count}-carton dropdown option`}
+                      className="text-rose-400 hover:text-rose-200 font-bold"
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
+              {masterCartonOptions.length === 0 && !masterCartonOptionsError && (
+                <p className="text-xs text-slate-500">No carton choices yet. Add options above.</p>
+              )}
+            </div>
+            <div className="border-t border-slate-800 pt-5">
+              <h3 className="text-sm font-semibold text-slate-200">Product Master Carton Defaults</h3>
+              <p className="mt-1 text-xs text-slate-400">
+                Only admin can edit or remove a count saved for a product.
+              </p>
+              {masterCartonSettingsError && (
+                <p className="mt-2 text-xs text-rose-400">
+                  Could not load product carton counts: {masterCartonSettingsError}
+                </p>
+              )}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-300">
+                <thead className="bg-[#0b0f19] text-slate-400 uppercase">
+                  <tr>
+                    <th className="p-3">Party</th>
+                    <th className="p-3">Product</th>
+                    <th className="p-3">Master Cartons</th>
+                    <th className="p-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {masterCartonSettings.map((setting) => (
+                    <tr key={setting.product_id}>
+                      <td className="p-3">{setting.party_name}</td>
+                      <td className="p-3 font-semibold text-white">{setting.product_name}</td>
+                      <td className="p-3">
+                        {editingMasterCartonProductId === setting.product_id ? (
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={editingMasterCartonCount}
+                            onChange={(event) => setEditingMasterCartonCount(event.target.value)}
+                            aria-label={`Master carton count for ${setting.product_name}`}
+                            className="w-32 bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-slate-200"
+                          />
+                        ) : (
+                          <span className="font-mono text-cyan-300">{setting.carton_count}</span>
+                        )}
+                      </td>
+                      <td className="p-3 text-right whitespace-nowrap">
+                        {editingMasterCartonProductId === setting.product_id ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleSaveMasterCartonSetting(setting)}
+                              disabled={loading}
+                              className="text-emerald-400 mr-3"
+                            >
+                              Save
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingMasterCartonProductId(null)}
+                              className="text-slate-400"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingMasterCartonProductId(setting.product_id);
+                                setEditingMasterCartonCount(String(setting.carton_count));
+                              }}
+                              className="text-blue-400 mr-3"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteMasterCartonSetting(setting)}
+                              disabled={loading}
+                              className="text-rose-400"
+                            >
+                              Remove
+                            </button>
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                  {masterCartonSettings.length === 0 && !masterCartonSettingsError && (
+                    <tr>
+                      <td colSpan={4} className="p-6 text-center text-slate-500">
+                        Carton counts entered for products in Filling will appear here.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         {activeTab === "parties" && (
           <div className="bg-[#121827] border border-slate-800 rounded-xl p-6 shadow-lg space-y-4">
             <h2 className="text-md font-semibold text-slate-200">Registered Parties</h2>
@@ -1068,16 +1725,26 @@ export default function AdminPage() {
                   <tr><th className="p-3">Code</th><th className="p-3">Name</th><th className="p-3 text-right">Actions</th></tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
-                  {filteredParties.map((p) => (
-                    <tr key={p.id} className="hover:bg-slate-800/50">
-                      <td className="p-3 font-mono text-purple-400">{p.code}</td>
-                      <td className="p-3 font-bold text-slate-200">{p.name}</td>
-                      <td className="p-3 text-right">
-                        <button onClick={() => setEditingParty(p)} className="text-blue-400 mr-3 px-2 py-1 bg-blue-900/30 rounded">Edit</button>
-                        <button onClick={() => handleDeleteParty(p.id, p.name)} className="text-rose-400 px-2 py-1 bg-rose-900/30 rounded">Delete</button>
-                      </td>
-                    </tr>
-                  ))}
+                  {filteredParties.map((p) => {
+                    const productCount = partyProductCounts[p.id] ?? 0;
+                    const productLabel = productCount === 1 ? "1 Product" : `${productCount} Products`;
+
+                    return (
+                      <tr key={p.id} className="hover:bg-slate-800/50">
+                        <td className="p-3 font-mono text-purple-400">{p.code}</td>
+                        <td className="p-3 font-bold text-slate-200">
+                          <span>{p.name}</span>
+                          <span className="ml-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-300">
+                            {productLabel}
+                          </span>
+                        </td>
+                        <td className="p-3 text-right">
+                          <button onClick={() => setEditingParty(p)} className="text-blue-400 mr-3 px-2 py-1 bg-blue-900/30 rounded">Edit</button>
+                          <button onClick={() => handleDeleteParty(p.id, p.name)} className="text-rose-400 px-2 py-1 bg-rose-900/30 rounded">Delete</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1122,7 +1789,7 @@ export default function AdminPage() {
                     <tr key={bom.id} className="hover:bg-slate-800/50">
                       <td className="p-3 font-semibold text-emerald-400">{bom.products?.parties?.name}</td>
                       <td className="p-3 font-semibold text-slate-200">{bom.products?.product_name}</td>
-                      <td className="p-3 uppercase font-bold text-amber-400">{bom.component_type.replace("_", " ")}</td>
+                      <td className="p-3 uppercase font-bold text-amber-400">{formatComponentTypeLabel(bom.component_type)}</td>
                       <td className="p-3 font-mono">{bom.ml_capacity ? `${bom.ml_capacity} ${bom.capacity_unit || "ML"}` : "-"}</td>
                       <td className="p-3 font-mono font-bold text-amber-300">{bom.weight_10_pcs_grams} g</td>
                       <td className="p-3 text-right">
@@ -1151,6 +1818,7 @@ export default function AdminPage() {
                       <th className="p-3">Pack Size</th>
                       <th className="p-3 text-center">Req. Pcs</th>
                       <th className="p-3">Room</th>
+                      <th className="p-3">Packaging / Allocation / Source</th>
                       <th className="sticky right-0 bg-[#0b0f19] p-3 text-right">Actions</th>
                     </tr>
                   </thead>
@@ -1163,12 +1831,15 @@ export default function AdminPage() {
                         <td className="p-3 whitespace-nowrap font-mono font-bold text-cyan-300">
                           {req.pack_size ? `${req.pack_size} ${req.pack_unit || "ML"}` : "—"}
                         </td>
-                        <td className="p-3 whitespace-nowrap font-bold text-cyan-300">
-                          {req.room_number ? `Room ${req.room_number}` : "—"}
-                        </td>
                         <td className="p-3 text-center font-mono text-amber-300">{req.pcs_requested}</td>
                         <td className="p-3 whitespace-nowrap font-bold text-cyan-300">
                           {req.room_number ? `Room ${req.room_number}` : "—"}
+                        </td>
+                        <td className="p-3 text-[10px] text-slate-300 whitespace-nowrap">
+                          <div>Cartons: {req.master_carton_count ?? "—"} × {req.master_carton_pcs ?? "—"} pcs</div>
+                          <div>Plan: {req.plan_pcs ?? 0} | Nigehban: {req.nigehban_pcs ?? 0} pcs</div>
+                          <div>Source: {req.source_warehouse || "—"}</div>
+                          <div>Master Carton Warehouse: {req.master_carton_warehouse || "—"}</div>
                         </td>
                         <td className="sticky right-0 whitespace-nowrap bg-[#121827] p-3 text-right">
                           <button
@@ -1202,7 +1873,7 @@ export default function AdminPage() {
                       </tr>
                     ))}
                     {filteredFillingLogs.length === 0 && (
-                      <tr><td colSpan={7} className="p-6 text-center text-slate-500">No requests received from Filling Incharge.</td></tr>
+                      <tr><td colSpan={8} className="p-6 text-center text-slate-500">No requests received from Filling Incharge.</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -1472,7 +2143,13 @@ export default function AdminPage() {
         <div className="fixed inset-0 bg-black/75 flex items-center justify-center p-4 z-50">
           <div className="bg-[#121827] border border-slate-800 p-6 rounded-xl w-full max-w-md space-y-4 shadow-2xl">
             <h3 className="text-sm font-semibold text-slate-100">Add New Component Type Option</h3>
-            <input type="text" value={newTypeName} onChange={(e) => setNewTypeName(e.target.value)} placeholder="e.g. outer_carton" className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 uppercase" />
+            <input
+              type="text"
+              value={newTypeName}
+              onChange={(e) => setNewTypeName(e.target.value.toUpperCase().replace(/[^A-Z0-9\s_-]/g, ""))}
+              placeholder="e.g. OUTER CARTON"
+              className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 uppercase"
+            />
             <div className="flex justify-end gap-3 pt-2">
               <button type="button" onClick={() => setShowAddTypeModal(false)} className="px-4 py-1.5 text-xs bg-slate-800 text-slate-300 rounded-lg">Cancel</button>
               <button type="button" onClick={handleAddNewComponentType} className="px-4 py-1.5 text-xs bg-amber-600 text-white rounded-lg font-medium">Add Option</button>
@@ -1516,7 +2193,7 @@ export default function AdminPage() {
           <form onSubmit={handleUpdateBomItem} className="bg-[#121827] border border-slate-800 p-6 rounded-2xl space-y-4 w-full max-w-md">
             <h3 className="text-lg font-bold text-white">Edit Assembling Component</h3>
             <select value={editingBomItem.component_type} onChange={(e) => setEditingBomItem({ ...editingBomItem, component_type: e.target.value })} className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-white uppercase" required>
-              {componentTypes.map((type) => (<option key={type} value={type}>{type.replace("_", " ").toUpperCase()}</option>))}
+              {componentTypes.map((type) => (<option key={type} value={type}>{formatComponentTypeLabel(type)}</option>))}
             </select>
             <label className="block text-xs text-slate-400">Fill Capacity</label>
             <div className="flex gap-2">

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
@@ -18,6 +18,17 @@ interface Party {
   name: string;
   code?: string;
 }
+
+interface MasterCartonOption {
+  id: string;
+  carton_count: number;
+  alert_threshold?: number | null;
+}
+
+const getDefaultWarehousePartyId = (partyList: Party[]) =>
+  partyList.find((party) => party.name.trim().toLowerCase() === "nigehban")?.id ??
+  partyList.find((party) => party.name.toLowerCase().includes("nigehban"))?.id ??
+  "";
 
 interface Product {
   id: string;
@@ -49,6 +60,14 @@ interface FillingRequest {
   pack_size?: number | null;
   pack_unit?: "ML" | "GM" | string | null;
   room_number?: number | null;
+  master_carton_count?: number | null;
+  master_carton_pcs?: number | null;
+  plan_pcs?: number;
+  nigehban_pcs?: number;
+  source_warehouse?: string | null;
+  source_warehouse_party_id?: string | null;
+  master_carton_warehouse?: string | null;
+  master_carton_warehouse_party_id?: string | null;
   party_id?: string;
   product_id?: string;
   party_name: string;
@@ -68,8 +87,14 @@ interface FillingRequest {
 export default function FillingInchargePage() {
   const [partiesList, setPartiesList] = useState<Party[]>([]);
   const [productsList, setProductsList] = useState<Product[]>([]);
+  const [masterCartonOptions, setMasterCartonOptions] = useState<MasterCartonOption[]>([]);
+  const [masterCartonOptionsError, setMasterCartonOptionsError] = useState<string | null>(null);
   const [fillingRequests, setFillingRequests] = useState<FillingRequest[]>([]);
   const [loading, setLoading] = useState(false);
+  const [masterCartonSettingExists, setMasterCartonSettingExists] = useState(false);
+  const [masterCartonSettingLoading, setMasterCartonSettingLoading] = useState(false);
+  const [masterCartonSettingError, setMasterCartonSettingError] = useState<string | null>(null);
+  const cartonLookupSequence = useRef(0);
 
   const [batchNo, setBatchNo] = useState<string>(`BATCH-${Math.floor(1000 + Math.random() * 9000)}`);
   const [mfgDate, setMfgDate] = useState<string>(new Date().toISOString().split("T")[0]);
@@ -78,6 +103,12 @@ export default function FillingInchargePage() {
   const [productPackSize, setProductPackSize] = useState<number | null>(null);
   const [productPackUnit, setProductPackUnit] = useState<"ML" | "GM">("ML");
   const [roomNumber, setRoomNumber] = useState("");
+  const [masterCartonCount, setMasterCartonCount] = useState("");
+  const [masterCartonPcs, setMasterCartonPcs] = useState("");
+  const [planPcs, setPlanPcs] = useState("0");
+  const [nigehbanPcs, setNigehbanPcs] = useState("0");
+  const [sourceWarehousePartyId, setSourceWarehousePartyId] = useState("");
+  const [masterCartonWarehousePartyId, setMasterCartonWarehousePartyId] = useState("");
 
   const [selectedPartyId, setSelectedPartyId] = useState("");
   const [selectedProductId, setSelectedProductId] = useState("");
@@ -102,10 +133,27 @@ export default function FillingInchargePage() {
     setLoading(true);
     try {
       const { data: partyData } = await supabase.from("parties").select("*");
-      if (partyData) setPartiesList(partyData);
+      if (partyData) {
+        setPartiesList(partyData);
+        const defaultWarehouseId = getDefaultWarehousePartyId(partyData);
+        setSourceWarehousePartyId((current) => current || defaultWarehouseId);
+        setMasterCartonWarehousePartyId((current) => current || defaultWarehouseId);
+      }
 
       const { data: prodData } = await supabase.from("products").select("*");
       if (prodData) setProductsList(prodData);
+
+      const { data: cartonOptions, error: cartonOptionsError } = await supabase
+        .from("master_carton_options")
+        .select("id, carton_count, alert_threshold")
+        .order("carton_count");
+      if (cartonOptionsError) {
+        setMasterCartonOptionsError(cartonOptionsError.message);
+        console.error("Master Carton options fetch error:", cartonOptionsError.message);
+      } else {
+        setMasterCartonOptionsError(null);
+        setMasterCartonOptions(cartonOptions ?? []);
+      }
 
       const { data: reqData, error: reqErr } = await supabase
         .from("filling_requests")
@@ -127,16 +175,43 @@ export default function FillingInchargePage() {
 
   // 100% DYNAMIC LIVE STOCK FETCHING FROM SUPABASE INVENTORY TABLE
   const handleProductSelection = async (prodId: string) => {
+    const lookupSequence = ++cartonLookupSequence.current;
     setSelectedProductId(prodId);
     setStockErrorMsg(null);
     setPcsRequested("");
     setProductBomPreview([]);
     setProductPackSize(null);
     setProductPackUnit("ML");
+    setMasterCartonCount("");
+    setMasterCartonSettingExists(false);
+    setMasterCartonSettingError(null);
+    setMasterCartonSettingLoading(Boolean(prodId));
 
-    if (!prodId || !selectedPartyId) return;
+    if (!prodId || !selectedPartyId) {
+      setMasterCartonSettingLoading(false);
+      return;
+    }
 
     try {
+      try {
+        const { data: cartonSetting, error: cartonSettingError } = await supabase
+          .from("master_carton_product_settings")
+          .select("carton_count")
+          .eq("product_id", prodId)
+          .maybeSingle();
+        if (cartonSettingError) throw cartonSettingError;
+        if (lookupSequence === cartonLookupSequence.current) {
+          setMasterCartonCount(cartonSetting ? String(cartonSetting.carton_count) : "");
+          setMasterCartonSettingExists(Boolean(cartonSetting));
+        }
+      } catch (err) {
+        if (lookupSequence === cartonLookupSequence.current) {
+          setMasterCartonSettingError(
+            err instanceof Error ? err.message : "Could not load this product's master carton count."
+          );
+        }
+      }
+
       // 1. Fetch Product BOM Breakdown
       const { data: bomData } = await supabase
         .from("product_bom")
@@ -194,6 +269,59 @@ export default function FillingInchargePage() {
       }
     } catch (err) {
       console.error("Error fetching live stock:", err);
+    } finally {
+      if (lookupSequence === cartonLookupSequence.current) {
+        setMasterCartonSettingLoading(false);
+      }
+    }
+  };
+
+  const persistMasterCartonSetting = async (productId: string, cartonCount: number) => {
+    const { data, error } = await supabase
+      .from("master_carton_product_settings")
+      .insert({ product_id: productId, carton_count: cartonCount })
+      .select("carton_count")
+      .single();
+    if (!error && data) return data.carton_count;
+
+    const { data: existingSetting, error: lookupError } = await supabase
+      .from("master_carton_product_settings")
+      .select("carton_count")
+      .eq("product_id", productId)
+      .maybeSingle();
+    if (lookupError) throw lookupError;
+    if (existingSetting) return existingSetting.carton_count;
+    if (error) throw error;
+    throw new Error("The database did not return the saved carton count.");
+  };
+
+  const handleSaveInitialMasterCartonCount = async () => {
+    if (
+      !selectedProductId ||
+      masterCartonSettingExists ||
+      !masterCartonCount ||
+      masterCartonSettingLoading
+    ) return;
+
+    const cartonCount = Number(masterCartonCount);
+    if (!Number.isSafeInteger(cartonCount) || cartonCount <= 0) {
+      setMasterCartonSettingError("Enter a whole number greater than zero.");
+      return;
+    }
+
+    setMasterCartonSettingLoading(true);
+    setMasterCartonSettingError(null);
+    try {
+      const savedCount = await persistMasterCartonSetting(selectedProductId, cartonCount);
+      if (savedCount !== cartonCount) setMasterCartonCount(String(savedCount));
+      setMasterCartonSettingExists(true);
+    } catch (err) {
+      console.error("Could not save product master carton count:", err);
+      setMasterCartonSettingError(
+        err instanceof Error ? err.message : "Could not save this product's master carton count."
+      );
+    } finally {
+      setMasterCartonSettingLoading(false);
     }
   };
 
@@ -238,11 +366,39 @@ export default function FillingInchargePage() {
       return alert(`Order Cannot Be Processed!\n\n${stockErrorMsg}`);
     }
 
+    const cartonCount = masterCartonCount === "" ? null : Number(masterCartonCount);
+    const cartonPcs = masterCartonPcs === "" ? null : Number(masterCartonPcs);
+    const plannedPcs = Number(planPcs);
+    const allocatedNigehbanPcs = Number(nigehbanPcs);
+    if (
+      (cartonCount !== null && (!Number.isSafeInteger(cartonCount) || cartonCount <= 0)) ||
+      (cartonPcs !== null && (!Number.isSafeInteger(cartonPcs) || cartonPcs <= 0)) ||
+      !Number.isSafeInteger(plannedPcs) ||
+      plannedPcs < 0 ||
+      !Number.isSafeInteger(allocatedNigehbanPcs) ||
+      allocatedNigehbanPcs < 0
+    ) {
+      return alert("Enter whole numbers: carton values must be greater than zero, and Plan/Nigehban Pcs cannot be negative.");
+    }
+
     setLoading(true);
     try {
+      let savedCartonCount = cartonCount;
+      if (cartonCount !== null && !masterCartonSettingExists) {
+        savedCartonCount = await persistMasterCartonSetting(selectedProductId, cartonCount);
+        setMasterCartonCount(String(savedCartonCount));
+        setMasterCartonSettingExists(true);
+      }
+
       const partyObj = partiesList.find((p) => p.id === selectedPartyId);
       const prodObj = productsList.find((p) => p.id === selectedProductId);
+      const sourceWarehouseParty = partiesList.find((p) => p.id === sourceWarehousePartyId);
+      const masterCartonWarehouseParty = partiesList.find((p) => p.id === masterCartonWarehousePartyId);
       const qty = parseInt(pcsRequested) || 0;
+      const resolvedCartonPcs = cartonPcs ?? (Number.isFinite(qty) && qty > 0 && Number.isFinite(Number(masterCartonPcs)) && Number(masterCartonPcs) > 0 ? Number(masterCartonPcs) : null);
+      const effectiveCartonCount =
+        savedCartonCount ??
+        (resolvedCartonPcs && qty > 0 ? Math.ceil(qty / resolvedCartonPcs) : null);
 
       const generatedComponents: ComponentWeightItem[] = productBomPreview.map((comp) => ({
         component_type: comp.component_type,
@@ -262,6 +418,14 @@ export default function FillingInchargePage() {
         pack_size: productPackSize,
         pack_unit: productPackUnit,
         room_number: Number(roomNumber),
+        master_carton_count: effectiveCartonCount,
+        master_carton_pcs: resolvedCartonPcs,
+        plan_pcs: plannedPcs,
+        nigehban_pcs: allocatedNigehbanPcs,
+        source_warehouse: sourceWarehouseParty?.name ?? null,
+        source_warehouse_party_id: sourceWarehouseParty?.id ?? null,
+        master_carton_warehouse: masterCartonWarehouseParty?.name ?? null,
+        master_carton_warehouse_party_id: masterCartonWarehouseParty?.id ?? null,
         party_id: selectedPartyId,
         product_id: selectedProductId,
         party_name: partyObj?.name || "N/A",
@@ -290,6 +454,15 @@ export default function FillingInchargePage() {
       setSelectedPartyId("");
       setSelectedProductId("");
       setRoomNumber("");
+      setMasterCartonCount("");
+      setMasterCartonSettingExists(false);
+      setMasterCartonSettingError(null);
+      setMasterCartonPcs("");
+      setPlanPcs("0");
+      setNigehbanPcs("0");
+      const defaultWarehouseId = getDefaultWarehousePartyId(partiesList);
+      setSourceWarehousePartyId(defaultWarehouseId);
+      setMasterCartonWarehousePartyId(defaultWarehouseId);
       setPcsRequested("");
       setRetailPrice("");
       setExpDate("");
@@ -397,6 +570,46 @@ export default function FillingInchargePage() {
     filterRecord(r.created_at || r.requested_at, r.party_name, r.product_name)
   );
 
+  const requestedQty = Number(pcsRequested);
+  const enteredPcsPerCarton = Number(masterCartonPcs);
+  const computedCartonQty =
+    Number.isFinite(requestedQty) && requestedQty > 0 && Number.isFinite(enteredPcsPerCarton) && enteredPcsPerCarton > 0
+      ? Math.ceil(requestedQty / enteredPcsPerCarton)
+      : null;
+  const sourceWarehouseParty = partiesList.find((p) => p.id === sourceWarehousePartyId);
+  const masterCartonWarehouseParty = partiesList.find((p) => p.id === masterCartonWarehousePartyId);
+  const autoCartonSummary =
+    computedCartonQty !== null
+      ? {
+          cartons: computedCartonQty,
+          pcsPerCarton: enteredPcsPerCarton,
+          sourceWarehouse: sourceWarehouseParty?.name ?? "Not selected",
+          masterWarehouse: masterCartonWarehouseParty?.name ?? "Not selected",
+        }
+      : null;
+  const selectedMasterCartonThreshold =
+    Number(masterCartonCount) > 0
+      ? masterCartonOptions.find((option) => option.carton_count === Number(masterCartonCount))?.alert_threshold ?? null
+      : computedCartonQty !== null
+        ? masterCartonOptions.find((option) => option.carton_count === computedCartonQty)?.alert_threshold ?? null
+        : null;
+  const selectedMasterCartonAlert =
+    selectedMasterCartonThreshold !== null &&
+    Number(masterCartonCount || computedCartonQty || 0) <= selectedMasterCartonThreshold &&
+    Number(masterCartonCount || computedCartonQty || 0) > 0;
+
+  useEffect(() => {
+    if (!selectedProductId || !pcsRequested) return;
+    if (masterCartonCount) return;
+
+    const qty = Number(pcsRequested);
+    const pcsPerCarton = Number(masterCartonPcs);
+    if (!Number.isFinite(qty) || qty <= 0) return;
+    if (!Number.isFinite(pcsPerCarton) || pcsPerCarton <= 0) return;
+
+    setMasterCartonCount(String(Math.ceil(qty / pcsPerCarton)));
+  }, [selectedProductId, pcsRequested, masterCartonPcs, masterCartonCount]);
+
   return (
     <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-3 sm:p-6 font-sans space-y-6">
       <div className="border-b border-slate-800 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 max-w-7xl mx-auto">
@@ -480,6 +693,11 @@ export default function FillingInchargePage() {
                   onChange={(e) => {
                     setSelectedPartyId(e.target.value);
                     setSelectedProductId("");
+                    cartonLookupSequence.current += 1;
+                    setMasterCartonCount("");
+                    setMasterCartonSettingExists(false);
+                    setMasterCartonSettingLoading(false);
+                    setMasterCartonSettingError(null);
                     setProductBomPreview([]);
                     setProductPackSize(null);
                     setProductPackUnit("ML");
@@ -556,6 +774,143 @@ export default function FillingInchargePage() {
                   className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
                   required
                 />
+              </div>
+            </div>
+
+            {autoCartonSummary && (
+              <div className="bg-[#0b0f19] border border-emerald-700/50 rounded-xl p-3 text-xs text-slate-200 space-y-1">
+                <div className="text-[10px] uppercase tracking-wider text-emerald-400 font-bold">
+                  Auto Carton / Warehouse Summary
+                </div>
+                <div className="text-sm font-bold text-emerald-300">
+                  {autoCartonSummary.cartons} master carton(s) required for {requestedQty.toLocaleString()} pcs
+                </div>
+                <div>
+                  Approximate Pcs per carton: <span className="font-bold text-white">{autoCartonSummary.pcsPerCarton}</span>
+                </div>
+                <div>
+                  Source warehouse: <span className="font-bold text-white">{autoCartonSummary.sourceWarehouse}</span>
+                </div>
+                <div>
+                  Master carton warehouse: <span className="font-bold text-white">{autoCartonSummary.masterWarehouse}</span>
+                </div>
+                {selectedMasterCartonThreshold !== null && (
+                  <div className={`mt-2 rounded-lg border px-2 py-1.5 ${selectedMasterCartonAlert ? "border-rose-500/50 bg-rose-500/10 text-rose-200" : "border-amber-500/40 bg-amber-500/10 text-amber-200"}`}>
+                    {selectedMasterCartonAlert
+                      ? `ALERT: Remaining cartons are at or below ${selectedMasterCartonThreshold}. Admin and warehouse team must be notified.`
+                      : `Alert threshold set: if remaining cartons fall to ${selectedMasterCartonThreshold} or below, admin/warehouse will be alerted.`}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
+              <div>
+                <label className="text-xs text-cyan-400 block mb-1">Master Cartons</label>
+                <select
+                  value={masterCartonCount}
+                  onChange={(e) => setMasterCartonCount(e.target.value)}
+                  onBlur={handleSaveInitialMasterCartonCount}
+                  disabled={!selectedProductId || masterCartonSettingLoading || masterCartonSettingExists}
+                  className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                >
+                  <option value="">
+                    {selectedProductId ? "-- Select Carton Number --" : "-- Select a product first --"}
+                  </option>
+                  {masterCartonSettingExists &&
+                    masterCartonCount &&
+                    !masterCartonOptions.some((option) => String(option.carton_count) === masterCartonCount) && (
+                      <option value={masterCartonCount}>{masterCartonCount} cartons (saved)</option>
+                    )}
+                  {masterCartonOptions.map((option) => (
+                    <option key={option.id} value={option.carton_count}>
+                      {option.carton_count} cartons
+                    </option>
+                  ))}
+                </select>
+                {masterCartonSettingExists && (
+                  <p className="mt-1 text-[10px] text-emerald-400">
+                    Saved for this product. Ask admin to change it.
+                  </p>
+                )}
+                {masterCartonSettingLoading && (
+                  <p className="mt-1 text-[10px] text-slate-400">Loading or saving carton count...</p>
+                )}
+                {masterCartonSettingError && (
+                  <p className="mt-1 text-[10px] text-rose-400">
+                    {masterCartonSettingError}
+                  </p>
+                )}
+                {masterCartonOptionsError && (
+                  <p className="mt-1 text-[10px] text-rose-400">
+                    Could not load carton choices: {masterCartonOptionsError}
+                  </p>
+                )}
+                {selectedProductId && !masterCartonSettingExists && !masterCartonSettingError && (
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Choose a carton number; it will be saved for this product.
+                  </p>
+                )}
+              </div>
+              <div>
+                <label className="text-xs text-cyan-400 block mb-1">Pcs per Master Carton</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={masterCartonPcs}
+                  onChange={(e) => setMasterCartonPcs(e.target.value)}
+                  placeholder="Optional"
+                  className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-indigo-400 block mb-1">Plan Pcs</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={planPcs}
+                  onChange={(e) => setPlanPcs(e.target.value)}
+                  className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-emerald-400 block mb-1">Nigehban Pcs</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={nigehbanPcs}
+                  onChange={(e) => setNigehbanPcs(e.target.value)}
+                  className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-amber-400 block mb-1">Source Warehouse / Party</label>
+                <select
+                  value={sourceWarehousePartyId}
+                  onChange={(e) => setSourceWarehousePartyId(e.target.value)}
+                  className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                >
+                  <option value="">-- Optional --</option>
+                  {partiesList.map((party) => (
+                    <option key={party.id} value={party.id}>{party.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-cyan-400 block mb-1">Master Cartons Warehouse</label>
+                <select
+                  value={masterCartonWarehousePartyId}
+                  onChange={(e) => setMasterCartonWarehousePartyId(e.target.value)}
+                  className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                >
+                  <option value="">-- Optional --</option>
+                  {partiesList.map((party) => (
+                    <option key={party.id} value={party.id}>{party.name}</option>
+                  ))}
+                </select>
               </div>
             </div>
 
@@ -673,7 +1028,7 @@ export default function FillingInchargePage() {
                 onClick={() => {
                   exportPDFWithLogo(
                     "Filling Incharge Material Requisition Log",
-                    ["Batch No", "Mfg/Exp", "Retail Price", "Party", "Product", "Pack Size", "Room", "Pcs"],
+                    ["Batch No", "Mfg/Exp", "Retail Price", "Party", "Product", "Pack Size", "Room", "Pcs", "Cartons", "Pcs/Carton", "Plan Pcs", "Nigehban Pcs", "Source Warehouse", "Master Cartons Warehouse"],
                     filteredRequestsList.map((f) => [
                       f.batch_no || f.req_code || "N/A",
                       `Mfg: ${f.mfg_date || "N/A"}\nExp: ${f.exp_date || "N/A"}`,
@@ -683,6 +1038,12 @@ export default function FillingInchargePage() {
                       f.pack_size ? `${f.pack_size} ${f.pack_unit || "ML"}` : "N/A",
                       f.room_number ? `Room ${f.room_number}` : "N/A",
                       f.pcs_requested,
+                      f.master_carton_count ?? "N/A",
+                      f.master_carton_pcs ?? "N/A",
+                      f.plan_pcs ?? 0,
+                      f.nigehban_pcs ?? 0,
+                      f.source_warehouse || "N/A",
+                      f.master_carton_warehouse || "N/A",
                     ])
                   );
                 }}
@@ -703,6 +1064,7 @@ export default function FillingInchargePage() {
                     <th className="p-3">Pack Size</th>
                     <th className="p-3">Room</th>
                     <th className="p-3">Pcs</th>
+                    <th className="p-3">Cartons / Allocation / Warehouses</th>
                     <th className="p-3 text-indigo-400">Target Wt</th>
                     <th className="p-3 text-amber-400">Scale Wt</th>
                     <th className="p-3">Dates</th>
@@ -728,6 +1090,12 @@ export default function FillingInchargePage() {
                         {req.room_number ? `Room ${req.room_number}` : "N/A"}
                       </td>
                       <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{req.pcs_requested} Pcs</td>
+                      <td className="p-3 text-[10px] text-slate-300 whitespace-nowrap">
+                        <div>Cartons: {req.master_carton_count ?? "—"} × {req.master_carton_pcs ?? "—"} pcs</div>
+                        <div>Plan: {req.plan_pcs ?? 0} | Nigehban: {req.nigehban_pcs ?? 0} pcs</div>
+                        <div>Source: {req.source_warehouse || "—"}</div>
+                        <div>Master Carton Warehouse: {req.master_carton_warehouse || "—"}</div>
+                      </td>
                       <td className="p-3 font-mono font-bold text-indigo-300 whitespace-nowrap">
                         {(req.total_weight_kg || 0).toFixed(2)} Kg
                       </td>
