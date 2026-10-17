@@ -49,6 +49,7 @@ interface MasterCartonProductSetting {
   product_name: string;
   party_name: string;
   carton_count: number;
+  carton_pcs: number | null;
 }
 
 interface MasterCartonOption {
@@ -64,6 +65,7 @@ interface ComponentTypeOption {
 interface MasterCartonProductSettingRow {
   product_id: string;
   carton_count: number;
+  carton_pcs: number | null;
   products: {
     product_name: string;
     parties: { name: string }[] | null;
@@ -103,6 +105,16 @@ const formatDatabaseError = (error: unknown) => {
     return JSON.stringify(error);
   }
   return String(error);
+};
+
+const isMissingCartonPcsColumnError = (error: unknown) => {
+  if (typeof error !== "object" || error === null) return false;
+  const details = error as { code?: unknown; message?: unknown; details?: unknown };
+  const message = `${details.message ?? ""} ${details.details ?? ""}`.toLowerCase();
+  return (
+    (details.code === "42703" || message.includes("schema cache")) &&
+    message.includes("carton_pcs")
+  );
 };
 
 const resolveComponentTypeFieldName = async (): Promise<"component_type" | "name"> => {
@@ -153,6 +165,7 @@ export default function AdminPage() {
   const [masterCartonSettingsError, setMasterCartonSettingsError] = useState<string | null>(null);
   const [editingMasterCartonProductId, setEditingMasterCartonProductId] = useState<string | null>(null);
   const [editingMasterCartonCount, setEditingMasterCartonCount] = useState("");
+  const [editingMasterCartonPcs, setEditingMasterCartonPcs] = useState("");
   const [masterCartonOptions, setMasterCartonOptions] = useState<MasterCartonOption[]>([]);
   const [masterCartonOptionsError, setMasterCartonOptionsError] = useState<string | null>(null);
   const [newMasterCartonOption, setNewMasterCartonOption] = useState("");
@@ -548,10 +561,18 @@ export default function AdminPage() {
         .order("created_at", { ascending: false });
       if (accessData) setPartyAccessList(accessData);
 
-      const { data: cartonSettings, error: cartonSettingsError } = await supabase
+      let { data: cartonSettings, error: cartonSettingsError } = await supabase
         .from("master_carton_product_settings")
-        .select("product_id, carton_count, products(product_name, parties(name))")
+        .select("product_id, carton_count, carton_pcs, products(product_name, parties(name))")
         .order("carton_count");
+      if (isMissingCartonPcsColumnError(cartonSettingsError)) {
+        const fallback = await supabase
+          .from("master_carton_product_settings")
+          .select("product_id, carton_count, products(product_name, parties(name))")
+          .order("carton_count");
+        cartonSettings = (fallback.data ?? []).map((setting) => ({ ...setting, carton_pcs: null }));
+        cartonSettingsError = fallback.error;
+      }
       if (cartonSettingsError) {
         setMasterCartonSettingsError(cartonSettingsError.message);
         throw cartonSettingsError;
@@ -563,6 +584,7 @@ export default function AdminPage() {
         return {
           product_id: setting.product_id,
           carton_count: setting.carton_count,
+          carton_pcs: setting.carton_pcs,
           product_name: product?.product_name ?? "Unknown product",
           party_name: product?.parties?.[0]?.name ?? "Unknown party",
         };
@@ -641,24 +663,44 @@ export default function AdminPage() {
 
   const handleSaveMasterCartonSetting = async (setting: MasterCartonProductSetting) => {
     const cartonCount = Number(editingMasterCartonCount);
+    const cartonPcs = editingMasterCartonPcs === "" ? null : Number(editingMasterCartonPcs);
     if (!Number.isSafeInteger(cartonCount) || cartonCount <= 0) {
       alert("Please enter a whole number of cartons greater than zero.");
+      return;
+    }
+    if (cartonPcs !== null && (!Number.isSafeInteger(cartonPcs) || cartonPcs <= 0)) {
+      alert("Please enter a whole number of pcs per carton greater than zero, or leave it empty.");
       return;
     }
 
     setLoading(true);
     try {
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from("master_carton_product_settings")
-        .update({ carton_count: cartonCount, updated_at: new Date().toISOString() })
+        .update({ carton_count: cartonCount, carton_pcs: cartonPcs, updated_at: new Date().toISOString() })
         .eq("product_id", setting.product_id)
-        .select("product_id, carton_count")
+        .select("product_id, carton_count, carton_pcs")
         .single();
+      if (isMissingCartonPcsColumnError(error) && cartonPcs === null) {
+        const fallback = await supabase
+          .from("master_carton_product_settings")
+          .update({ carton_count: cartonCount, updated_at: new Date().toISOString() })
+          .eq("product_id", setting.product_id)
+          .select("product_id, carton_count")
+          .single();
+        data = fallback.data ? { ...fallback.data, carton_pcs: null } : null;
+        error = fallback.error;
+      }
+      if (isMissingCartonPcsColumnError(error)) {
+        throw new Error("Apply supabase/migrations/20261025000000_add_master_carton_pcs_per_product.sql in Supabase before saving pcs per carton.");
+      }
       if (error) throw error;
       if (!data) throw new Error("The database did not return the updated carton count.");
       setMasterCartonSettings((current) =>
         current.map((item) =>
-          item.product_id === setting.product_id ? { ...item, carton_count: data.carton_count } : item
+          item.product_id === setting.product_id
+            ? { ...item, carton_count: data.carton_count, carton_pcs: data.carton_pcs }
+            : item
         )
       );
       setEditingMasterCartonProductId(null);
@@ -1278,6 +1320,12 @@ export default function AdminPage() {
         (!filterEndDate || movementDate <= filterEndDate);
     });
   });
+  const masterCartonInventory = inventoryList.filter(
+    (stock) => stock.component_type?.trim().toLowerCase() === "master_carton"
+  );
+  const masterCartonWarehouseLogs = warehouseLogs.filter(
+    (log) => log.component_type?.trim().toLowerCase() === "master_carton"
+  );
 
   const renderInventoryFilters = (showActionFilter = false) => (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
@@ -1636,6 +1684,7 @@ export default function AdminPage() {
                     <th className="p-3">Party</th>
                     <th className="p-3">Product</th>
                     <th className="p-3">Master Cartons</th>
+                    <th className="p-3">Pcs per Carton</th>
                     <th className="p-3 text-right">Actions</th>
                   </tr>
                 </thead>
@@ -1657,6 +1706,22 @@ export default function AdminPage() {
                           />
                         ) : (
                           <span className="font-mono text-cyan-300">{setting.carton_count}</span>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        {editingMasterCartonProductId === setting.product_id ? (
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={editingMasterCartonPcs}
+                            onChange={(event) => setEditingMasterCartonPcs(event.target.value)}
+                            aria-label={`Pieces per master carton for ${setting.product_name}`}
+                            placeholder="Not set"
+                            className="w-32 bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-slate-200"
+                          />
+                        ) : (
+                          <span className="font-mono text-cyan-300">{setting.carton_pcs ?? "—"}</span>
                         )}
                       </td>
                       <td className="p-3 text-right whitespace-nowrap">
@@ -1685,6 +1750,7 @@ export default function AdminPage() {
                               onClick={() => {
                                 setEditingMasterCartonProductId(setting.product_id);
                                 setEditingMasterCartonCount(String(setting.carton_count));
+                                setEditingMasterCartonPcs(setting.carton_pcs == null ? "" : String(setting.carton_pcs));
                               }}
                               className="text-blue-400 mr-3"
                             >
@@ -1705,13 +1771,91 @@ export default function AdminPage() {
                   ))}
                   {masterCartonSettings.length === 0 && !masterCartonSettingsError && (
                     <tr>
-                      <td colSpan={4} className="p-6 text-center text-slate-500">
+                      <td colSpan={5} className="p-6 text-center text-slate-500">
                         Carton counts entered for products in Filling will appear here.
                       </td>
                     </tr>
                   )}
                 </tbody>
               </table>
+            </div>
+            <div className="border-t border-slate-800 pt-5 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-200">Warehouse Master Carton Stock &amp; Entries</h3>
+                <p className="mt-1 text-xs text-slate-400">
+                  Warehouse submissions appear here automatically with the current stock balance and IN/OUT history.
+                </p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-slate-300">
+                  <thead className="bg-[#0b0f19] text-slate-400 uppercase">
+                    <tr>
+                      <th className="p-3">Party</th>
+                      <th className="p-3">Product</th>
+                      <th className="p-3">Carton Number</th>
+                      <th className="p-3">Current Master Cartons</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {masterCartonInventory.map((stock) => (
+                      <tr key={stock.id}>
+                        <td className="p-3 font-semibold">{stock.party_name || "—"}</td>
+                        <td className="p-3 text-emerald-400">{stock.product_name || "—"}</td>
+                        <td className="p-3 font-mono">{stock.carton_count ? `#${stock.carton_count}` : "Shared / unspecified"}</td>
+                        <td className="p-3 font-mono font-bold text-amber-300">{stock.quantity ?? 0}</td>
+                      </tr>
+                    ))}
+                    {masterCartonInventory.length === 0 && (
+                      <tr>
+                        <td colSpan={4} className="p-6 text-center text-slate-500">
+                          No warehouse Master Carton stock has been entered yet.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-slate-300">
+                  <thead className="bg-[#0b0f19] text-slate-400 uppercase">
+                    <tr>
+                      <th className="p-3">Type</th>
+                      <th className="p-3">Party</th>
+                      <th className="p-3">Product</th>
+                      <th className="p-3">Carton Number</th>
+                      <th className="p-3">Quantity</th>
+                      <th className="p-3">Plan Type</th>
+                      <th className="p-3">Nigehban Quantity</th>
+                      <th className="p-3">Remarks</th>
+                      <th className="p-3">Date &amp; Time</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {masterCartonWarehouseLogs.map((log) => (
+                      <tr key={log.id}>
+                        <td className="p-3">{log.action_type}</td>
+                        <td className="p-3 font-semibold">{log.party_name || "—"}</td>
+                        <td className="p-3 text-emerald-400">{log.product_name || "—"}</td>
+                        <td className="p-3 font-mono">{log.carton_count ? `#${log.carton_count}` : "Shared / unspecified"}</td>
+                        <td className="p-3 font-mono text-amber-300">{log.quantity ?? 0} {log.component_type?.trim().toLowerCase() === "master_carton" ? "Cartons" : "Pcs"}</td>
+                        <td className="p-3">{log.plan_type || "—"}</td>
+                        <td className="p-3 font-mono">{log.nigehban_quantity ?? "—"}</td>
+                        <td className="p-3 text-slate-400">{log.remarks || "—"}</td>
+                        <td className="p-3 whitespace-nowrap text-slate-400">
+                          {log.created_at ? new Date(log.created_at).toLocaleString() : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                    {masterCartonWarehouseLogs.length === 0 && (
+                      <tr>
+                        <td colSpan={9} className="p-6 text-center text-slate-500">
+                          No Master Carton stock entries found.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
@@ -1836,9 +1980,13 @@ export default function AdminPage() {
                           {req.room_number ? `Room ${req.room_number}` : "—"}
                         </td>
                         <td className="p-3 text-[10px] text-slate-300 whitespace-nowrap">
-                          <div>Cartons: {req.master_carton_count ?? "—"} × {req.master_carton_pcs ?? "—"} pcs</div>
-                          <div>Plan: {req.plan_pcs ?? 0} | Nigehban: {req.nigehban_pcs ?? 0} pcs</div>
-                          <div>Source: {req.source_warehouse || "—"}</div>
+                          <div>Carton number: {req.master_carton_count ?? "—"} | {req.master_carton_pcs ?? "—"} pcs/carton</div>
+                          <div className="font-bold text-cyan-300">
+                            Required for batch: {req.master_cartons_required ??
+                              (req.master_carton_pcs > 0 && req.pcs_requested > 0
+                                ? Math.ceil(req.pcs_requested / req.master_carton_pcs)
+                                : "—")} cartons
+                          </div>
                           <div>Master Carton Warehouse: {req.master_carton_warehouse || "—"}</div>
                         </td>
                         <td className="sticky right-0 whitespace-nowrap bg-[#121827] p-3 text-right">

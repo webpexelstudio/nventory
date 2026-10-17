@@ -44,6 +44,7 @@ interface FillingRequest {
   room_number?: number | null;
   master_carton_count?: number | null;
   master_carton_pcs?: number | null;
+  master_cartons_required?: number | null;
   plan_pcs?: number;
   nigehban_pcs?: number;
   source_warehouse?: string | null;
@@ -63,6 +64,21 @@ interface FillingRequest {
   components?: ComponentWeightItem[];
 }
 
+const getRequiredMasterCartonCount = (request: FillingRequest) =>
+  request.master_cartons_required ??
+  (request.master_carton_pcs && request.master_carton_pcs > 0 && request.pcs_requested > 0
+    ? Math.ceil(request.pcs_requested / request.master_carton_pcs)
+    : null);
+
+const omitAllocationSourceFields = (request: FillingRequest) => {
+  const visibleRequest = { ...request };
+  delete visibleRequest.plan_pcs;
+  delete visibleRequest.nigehban_pcs;
+  delete visibleRequest.source_warehouse;
+  delete visibleRequest.source_warehouse_party_id;
+  return visibleRequest;
+};
+
 interface InventoryLog {
   id: string;
   action_type: "IN" | "OUT";
@@ -72,6 +88,7 @@ interface InventoryLog {
   quantity: number;
   remarks: string;
   created_at: string;
+  carton_count?: number | null;
 }
 
 interface StockBalance {
@@ -82,6 +99,12 @@ interface StockBalance {
   product_name?: string;
   component_type: string;
   quantity: number;
+  carton_count?: number | null;
+}
+
+interface MasterCartonOption {
+  id: string;
+  carton_count: number;
 }
 
 interface ProductBomCapacity {
@@ -111,13 +134,21 @@ const getErrorMessage = (error: unknown) => {
   return String(error);
 };
 
+const getQuantityUnit = (componentType: string) =>
+  componentType.trim().toLowerCase() === "master_carton" ? "Cartons" : "Pcs";
+
+const ALL_PARTIES_OPTION = "__all_parties__";
+const ALL_PRODUCTS_OPTION = "__all_products__";
+
 export default function WarehousePortalPage() {
-  const [activeTab, setActiveTab] = useState<"requests" | "stock_in" | "stock_out" | "balance">("requests");
+  const [activeTab, setActiveTab] = useState<"requests" | "stock_in" | "master_cartons" | "stock_out" | "balance">("requests");
   const [loading, setLoading] = useState(false);
 
   // Master Data from DB
   const [partiesList, setPartiesList] = useState<Party[]>([]);
   const [productsList, setProductsList] = useState<Product[]>([]);
+  const [masterCartonOptions, setMasterCartonOptions] = useState<MasterCartonOption[]>([]);
+  const [masterCartonOptionsError, setMasterCartonOptionsError] = useState<string | null>(null);
   
   // Warehouse Data
   const [requestsList, setRequestsList] = useState<FillingRequest[]>([]);
@@ -147,6 +178,14 @@ export default function WarehousePortalPage() {
     { component_type: "bottle", quantity: "" },
   ]);
   const [remarks, setRemarks] = useState("");
+  const [masterCartonPartyId, setMasterCartonPartyId] = useState("");
+  const [masterCartonProductPartyId, setMasterCartonProductPartyId] = useState("");
+  const [masterCartonProductId, setMasterCartonProductId] = useState("");
+  const [masterCartonNumber, setMasterCartonNumber] = useState("");
+  const [masterCartonQuantity, setMasterCartonQuantity] = useState("");
+  const [masterCartonPlanType, setMasterCartonPlanType] = useState("");
+  const [masterCartonNigehbanQuantity, setMasterCartonNigehbanQuantity] = useState("");
+  const [masterCartonRemarks, setMasterCartonRemarks] = useState("");
 
   // Stock OUT Manual Form State
   const [outPartyIdInput, setOutPartyIdInput] = useState("");
@@ -196,23 +235,37 @@ export default function WarehousePortalPage() {
       const { data: stockData } = await supabase.from("inventory").select("*");
       if (stockData) setStockBalances(stockData);
 
+      const { data: cartonOptionsData, error: cartonOptionsError } = await supabase
+        .from("master_carton_options")
+        .select("id, carton_count")
+        .order("carton_count");
+      if (cartonOptionsError) {
+        setMasterCartonOptionsError(cartonOptionsError.message);
+        throw cartonOptionsError;
+      }
+      setMasterCartonOptions(cartonOptionsData ?? []);
+      setMasterCartonOptionsError(null);
+
       // Fetch dynamic component types from product_bom table
       const { data: bomTypesData, error: bomTypesError } = await supabase
         .from("product_bom")
         .select("component_type, ml_capacity, capacity_unit, products(product_name, parties(name))");
       if (bomTypesError) throw bomTypesError;
-      if (bomTypesData && bomTypesData.length > 0) {
-        setProductBomCapacities(bomTypesData);
-        const uniqueTypes = Array.from(new Set(bomTypesData.map((b: any) => b.component_type).filter(Boolean)));
-        if (uniqueTypes.length > 0) {
-          setDynamicComponentTypes(uniqueTypes as string[]);
-          setStockInRows((rows) =>
-            rows.map((row, index) =>
-              index === 0 ? { ...row, component_type: uniqueTypes[0] as string } : row
-            )
-          );
-          setOutComponentType(uniqueTypes[0] as string);
-        }
+      if (bomTypesData) setProductBomCapacities(bomTypesData);
+      const uniqueTypes = Array.from(
+        new Set([...(bomTypesData ?? []).map((item: any) => item.component_type).filter(Boolean), "master_carton"])
+      );
+      setDynamicComponentTypes(uniqueTypes);
+      const stockInTypes = uniqueTypes.filter((type) => type.toLowerCase() !== "master_carton");
+      setStockInRows((rows) =>
+        rows.map((row, index) =>
+          index === 0 && !stockInTypes.some((type) => type.toLowerCase() === row.component_type.toLowerCase())
+            ? { ...row, component_type: stockInTypes[0] || "bottle" }
+            : row
+        )
+      );
+      if (uniqueTypes.length > 0 && !uniqueTypes.includes(outComponentType)) {
+        setOutComponentType(uniqueTypes[0]);
       }
     } catch (e) {
       console.error(e);
@@ -227,10 +280,14 @@ export default function WarehousePortalPage() {
   const filteredProductsForIn = productsList.filter((p) => p.party_id === inPartyId);
   const filteredProductsForOut = productsList.filter((p) => p.party_id === outPartyId);
   const filteredProductsForBal = productsList.filter((p) => p.party_id === balPartyId);
+  const filteredProductsForMasterCarton = masterCartonProductPartyId === ALL_PARTIES_OPTION
+    ? productsList
+    : productsList.filter((product) => product.party_id === masterCartonProductPartyId);
+  const stockInComponentTypes = dynamicComponentTypes.filter((type) => type.toLowerCase() !== "master_carton");
 
   const addStockInComponentRow = () => {
     const usedTypes = new Set(stockInRows.map((row) => row.component_type.toLowerCase()));
-    const nextType = dynamicComponentTypes.find((type) => !usedTypes.has(type.toLowerCase()));
+    const nextType = stockInComponentTypes.find((type) => !usedTypes.has(type.toLowerCase()));
     if (nextType) {
       setStockInRows((rows) => [...rows, { component_type: nextType, quantity: "" }]);
     }
@@ -390,64 +447,150 @@ export default function WarehousePortalPage() {
 
     setLoading(true);
     try {
-      const partyObj = partiesList.find((p) => p.id === selectedPartyId);
-      const prodObj = productsList.find((p) => p.id === selectedProductId);
-      if (!partyObj || !prodObj) throw new Error("Selected Party or Product could not be found.");
-
       const receivedRows = stockInRows.map((row) => ({
         componentType: row.component_type,
         quantity: Number(row.quantity),
       }));
-      const logPayloads = receivedRows.map((row) => ({
-        action_type: "IN",
-        party_name: partyObj.name,
-        product_name: prodObj.product_name,
-        component_type: row.componentType,
-        quantity: row.quantity,
-        remarks: remarks || "Stock IN entry in Warehouse",
-        created_at: new Date().toISOString(),
-      }));
-
-      const { error: logErr } = await supabase.from("inventory_logs").insert(logPayloads);
-      if (logErr) throw logErr;
-
-      for (const row of receivedRows) {
-        const existingStock = stockBalances.find(
-          (stock) =>
-            (stock.party_id === selectedPartyId || stock.party_name?.toLowerCase() === partyObj.name.toLowerCase()) &&
-            (stock.product_id === selectedProductId || stock.product_name?.toLowerCase() === prodObj.product_name.toLowerCase()) &&
-            stock.component_type?.toLowerCase() === row.componentType.toLowerCase()
-        );
-
-        if (existingStock) {
-          const { error } = await supabase
-            .from("inventory")
-            .update({ quantity: existingStock.quantity + row.quantity })
-            .eq("id", existingStock.id);
-          if (error) throw error;
-        } else {
-          const { error } = await supabase.from("inventory").insert([
-            {
-              party_id: selectedPartyId,
-              party_name: partyObj.name,
-              product_id: selectedProductId,
-              product_name: prodObj.product_name,
-              component_type: row.componentType,
-              quantity: row.quantity,
-            },
-          ]);
-          if (error) throw error;
-        }
-      }
+      await recordWarehouseStockIn(selectedPartyId, selectedProductId, receivedRows, remarks);
 
       alert(`Stock IN recorded successfully for ${receivedRows.length} component${receivedRows.length === 1 ? "" : "s"}!`);
       setSelectedPartyId("");
       setSelectedProductId("");
-      setStockInRows([{ component_type: dynamicComponentTypes[0] || "bottle", quantity: "" }]);
+      setStockInRows([{ component_type: stockInComponentTypes[0] || "bottle", quantity: "" }]);
       setRemarks("");
       fetchWarehouseAndMasterData();
     } catch (err: unknown) {
       alert("Stock IN failed: " + getErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const recordWarehouseStockIn = async (
+    partyId: string,
+    productId: string | null,
+    receivedRows: {
+      componentType: string;
+      quantity: number;
+      planType?: string;
+      nigehbanQuantity?: number;
+      cartonCount?: number;
+    }[],
+    entryRemarks: string
+  ) => {
+    const partyObj = partiesList.find((party) => party.id === partyId);
+    const prodObj = productId ? productsList.find((product) => product.id === productId) : null;
+    if (!partyObj || (productId && !prodObj)) throw new Error("Selected Party or Product could not be found.");
+    const productName = prodObj?.product_name ?? "All Products";
+
+    const logPayloads = receivedRows.map((row) => ({
+      action_type: "IN",
+      party_name: partyObj.name,
+      product_name: productName,
+      component_type: row.componentType,
+      quantity: row.quantity,
+      remarks: entryRemarks || "Stock IN entry in Warehouse",
+      created_at: new Date().toISOString(),
+      ...(row.planType === undefined ? {} : { plan_type: row.planType }),
+      ...(row.nigehbanQuantity === undefined ? {} : { nigehban_quantity: row.nigehbanQuantity }),
+      ...(row.cartonCount === undefined ? {} : { carton_count: row.cartonCount }),
+    }));
+
+    const { error: logError } = await supabase.from("inventory_logs").insert(logPayloads);
+    if (logError) throw logError;
+
+    for (const row of receivedRows) {
+      const existingStock = stockBalances.find(
+        (stock) =>
+          (stock.party_id === partyId || stock.party_name?.toLowerCase() === partyObj.name.toLowerCase()) &&
+          (productId
+            ? stock.product_id === productId || stock.product_name?.toLowerCase() === productName.toLowerCase()
+            : !stock.product_id && stock.product_name?.toLowerCase() === productName.toLowerCase()) &&
+          stock.component_type?.toLowerCase() === row.componentType.toLowerCase() &&
+          (row.cartonCount === undefined || (stock.carton_count ?? null) === row.cartonCount)
+      );
+
+      if (existingStock) {
+        const { error } = await supabase
+          .from("inventory")
+          .update({ quantity: existingStock.quantity + row.quantity })
+          .eq("id", existingStock.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("inventory").insert([
+          {
+            party_id: partyId,
+            party_name: partyObj.name,
+            product_id: productId,
+            product_name: productName,
+            component_type: row.componentType,
+            quantity: row.quantity,
+            ...(row.cartonCount === undefined ? {} : { carton_count: row.cartonCount }),
+          },
+        ]);
+        if (error) throw error;
+      }
+    }
+  };
+
+  const handleSaveMasterCartonStockIn = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const quantity = Number(masterCartonQuantity);
+    const cartonNumber = Number(masterCartonNumber);
+    const nigehbanQuantity = Number(masterCartonNigehbanQuantity);
+    if (!masterCartonPartyId || !masterCartonProductPartyId || !masterCartonProductId) {
+      return alert("Please select Product Party, Warehouse, and Product.");
+    }
+    const isSharedProductStock = masterCartonProductId === ALL_PRODUCTS_OPTION;
+    const selectedProduct = isSharedProductStock
+      ? null
+      : productsList.find((product) => product.id === masterCartonProductId);
+    if (!isSharedProductStock && (
+      !selectedProduct ||
+      (masterCartonProductPartyId !== ALL_PARTIES_OPTION &&
+        selectedProduct?.party_id !== masterCartonProductPartyId)
+    )) {
+      return alert("Please select a product that belongs to the selected Product Party.");
+    }
+    if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+      return alert("Please enter a whole-number carton quantity greater than zero.");
+    }
+    if (!Number.isSafeInteger(cartonNumber) || cartonNumber <= 0) {
+      return alert("Please select a valid Master Carton number.");
+    }
+    if (!masterCartonPlanType.trim()) {
+      return alert("Please enter the Plan Type.");
+    }
+    if (!Number.isSafeInteger(nigehbanQuantity) || nigehbanQuantity < 0) {
+      return alert("Please enter a whole-number Nigehban quantity of zero or more.");
+    }
+
+    setLoading(true);
+    try {
+      await recordWarehouseStockIn(
+        masterCartonPartyId,
+        isSharedProductStock ? null : masterCartonProductId,
+        [{
+          componentType: "master_carton",
+          quantity,
+          cartonCount: cartonNumber,
+          planType: masterCartonPlanType.trim(),
+          nigehbanQuantity,
+        }],
+        masterCartonRemarks
+      );
+      alert("Master Carton stock entry saved successfully.");
+      setMasterCartonPartyId("");
+      setMasterCartonProductPartyId("");
+      setMasterCartonProductId("");
+      setMasterCartonNumber("");
+      setMasterCartonQuantity("");
+      setMasterCartonPlanType("");
+      setMasterCartonNigehbanQuantity("");
+      setMasterCartonRemarks("");
+      void fetchWarehouseAndMasterData();
+    } catch (error: unknown) {
+      alert("Master Carton stock entry failed: " + getErrorMessage(error));
     } finally {
       setLoading(false);
     }
@@ -475,7 +618,8 @@ export default function WarehousePortalPage() {
       const availableQty = stockItem ? stockItem.quantity : 0;
       if (qtyNum > availableQty) {
         setLoading(false);
-        return alert(`Stock Out Error: Available quantity (${availableQty} Pcs) is less than requested issue quantity (${qtyNum} Pcs).`);
+        const unit = getQuantityUnit(outComponentType);
+        return alert(`Stock Out Error: Available quantity (${availableQty} ${unit}) is less than requested issue quantity (${qtyNum} ${unit}).`);
       }
 
       const logPayload = {
@@ -622,6 +766,14 @@ export default function WarehousePortalPage() {
             📥 Stock IN Portal
           </button>
           <button
+            onClick={() => setActiveTab("master_cartons")}
+            className={`px-3 sm:px-4 py-2 rounded-xl text-xs font-bold transition whitespace-nowrap shrink-0 ${
+              activeTab === "master_cartons" ? "bg-blue-600 text-white shadow-lg" : "bg-[#121827] text-slate-400 hover:text-white"
+            }`}
+          >
+            📦 Master Carton IN
+          </button>
+          <button
             onClick={() => setActiveTab("stock_out")}
             className={`px-3 sm:px-4 py-2 rounded-xl text-xs font-bold transition whitespace-nowrap shrink-0 ${
               activeTab === "stock_out" ? "bg-blue-600 text-white shadow-lg" : "bg-[#121827] text-slate-400 hover:text-white"
@@ -700,10 +852,14 @@ export default function WarehousePortalPage() {
                 <div className="flex gap-2 w-full sm:w-auto">
                   <button
                     onClick={() => exportExcel(
-                      filteredRequests.map(({ room_number, ...request }) => ({
-                        ...request,
-                        room: room_number ? `Room ${room_number}` : "N/A",
-                      })),
+                      filteredRequests.map((request) => {
+                        const exportRequest = omitAllocationSourceFields(request);
+                        delete exportRequest.room_number;
+                        return {
+                          ...exportRequest,
+                          room: request.room_number ? `Room ${request.room_number}` : "N/A",
+                        };
+                      }),
                       "Filling_Requests_Dispatch"
                     )}
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -714,7 +870,7 @@ export default function WarehousePortalPage() {
                     onClick={() =>
                       exportPDFWithLogo(
                         "Warehouse Filling Requests Log",
-                        ["Batch No", "Mfg/Exp", "Price", "Party", "Product", "Pack Size", "Room", "Pcs", "Cartons", "Pcs/Carton", "Plan Pcs", "Nigehban Pcs", "Source Warehouse", "Target Wt", "Scale Wt", "Dates", "Status"],
+                        ["Batch No", "Mfg/Exp", "Price", "Party", "Product", "Pack Size", "Room", "Pcs", "Carton Number", "Pcs/Carton", "Total Cartons Required", "Target Wt", "Scale Wt", "Dates", "Status"],
                         filteredRequests.map((f) => [
                           f.batch_no || f.req_code || "N/A",
                           `Mfg: ${f.mfg_date}\nExp: ${f.exp_date}`,
@@ -726,9 +882,7 @@ export default function WarehousePortalPage() {
                           f.pcs_requested,
                           f.master_carton_count ?? "N/A",
                           f.master_carton_pcs ?? "N/A",
-                          f.plan_pcs ?? 0,
-                          f.nigehban_pcs ?? 0,
-                          f.source_warehouse || "N/A",
+                          getRequiredMasterCartonCount(f) ?? "N/A",
                           `${(f.total_weight_kg || 0).toFixed(2)} Kg`,
                           f.actual_dispatched_weight_kg ? `${f.actual_dispatched_weight_kg.toFixed(2)} Kg` : "Pending",
                           `Req: ${f.required_date || "-"}\nSent: ${f.requested_at ? new Date(f.requested_at).toLocaleDateString() : "-"}\nDisp: ${f.dispatched_at || "-"}\nRecv: ${f.received_at || "-"}`,
@@ -753,7 +907,7 @@ export default function WarehousePortalPage() {
                         <th className="p-3">Pack Size</th>
                         <th className="p-3">Room</th>
                         <th className="p-3">Pcs</th>
-                        <th className="p-3">Packaging / Allocation / Source</th>
+                        <th className="p-3">Master Carton Requirement</th>
                         <th className="p-3 text-indigo-400">Target Wt</th>
                         <th className="p-3 text-amber-400">Scale Wt</th>
                         <th className="p-3">All Dates & Status</th>
@@ -780,9 +934,10 @@ export default function WarehousePortalPage() {
                           </td>
                           <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{req.pcs_requested} Pcs</td>
                           <td className="p-3 text-[10px] text-slate-300 whitespace-nowrap">
-                            <div>Cartons: {req.master_carton_count ?? "—"} × {req.master_carton_pcs ?? "—"} pcs</div>
-                            <div>Plan: {req.plan_pcs ?? 0} | Nigehban: {req.nigehban_pcs ?? 0} pcs</div>
-                            <div>Source: {req.source_warehouse || "—"}</div>
+                            <div>Carton number: {req.master_carton_count ?? "—"} | {req.master_carton_pcs ?? "—"} pcs/carton</div>
+                            <div className="font-bold text-cyan-300">
+                              Send for batch: {getRequiredMasterCartonCount(req) ?? "—"} cartons
+                            </div>
                           </td>
                           <td className="p-3 font-mono font-bold text-indigo-300 whitespace-nowrap">
                             {(req.total_weight_kg || 0).toFixed(2)} Kg
@@ -896,7 +1051,7 @@ export default function WarehousePortalPage() {
                     <button
                       type="button"
                       onClick={addStockInComponentRow}
-                      disabled={stockInRows.length >= dynamicComponentTypes.length}
+                      disabled={stockInRows.length >= stockInComponentTypes.length}
                       className="px-3 py-2 rounded-lg bg-blue-600/20 text-blue-300 border border-blue-500/30 text-xs font-bold hover:bg-blue-600/30 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       + Add Component
@@ -920,7 +1075,7 @@ export default function WarehousePortalPage() {
                           className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white uppercase"
                           required
                         >
-                          {dynamicComponentTypes.map((type) => (
+                          {stockInComponentTypes.map((type) => (
                             <option
                               key={type}
                               value={type}
@@ -1055,7 +1210,7 @@ export default function WarehousePortalPage() {
                       exportPDFWithLogo(
                         "Warehouse Stock IN Log",
                         ["Party", "Product", "Component", "Quantity", "Remarks", "Timestamp"],
-                        filteredStockInLogs.map((l) => [l.party_name, l.product_name || "N/A", formatStockInComponent(l), `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
+                        filteredStockInLogs.map((l) => [l.party_name, l.product_name || "N/A", formatStockInComponent(l), `${l.quantity} ${getQuantityUnit(l.component_type)}`, l.remarks, new Date(l.created_at).toLocaleString()])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -1085,7 +1240,7 @@ export default function WarehousePortalPage() {
                             <div className="text-[10px] text-emerald-400">{log.product_name || "N/A"}</div>
                           </td>
                           <td className="p-3 text-indigo-300">{formatStockInComponent(log)}</td>
-                          <td className="p-3 font-mono font-bold text-emerald-300 whitespace-nowrap">{log.quantity} Pcs</td>
+                          <td className="p-3 font-mono font-bold text-emerald-300 whitespace-nowrap">{log.quantity} {getQuantityUnit(log.component_type)}</td>
                           <td className="p-3 text-slate-400">{log.remarks}</td>
                           <td className="p-3 text-slate-400 whitespace-nowrap">{new Date(log.created_at).toLocaleString()}</td>
                         </tr>
@@ -1095,6 +1250,164 @@ export default function WarehousePortalPage() {
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {activeTab === "master_cartons" && (
+          <div className="bg-[#121827] border border-slate-800 p-4 sm:p-6 rounded-2xl shadow-xl space-y-5">
+            <div>
+              <h2 className="text-sm sm:text-md font-bold text-white">Master Carton Stock IN</h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Record received master cartons separately. Saved quantities will update the live inventory and appear in the Admin Master Cartons page.
+              </p>
+            </div>
+            <form onSubmit={handleSaveMasterCartonStockIn} className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Product Party / Company</label>
+                  <select
+                    value={masterCartonProductPartyId}
+                    onChange={(event) => {
+                      setMasterCartonProductPartyId(event.target.value);
+                      setMasterCartonProductId("");
+                    }}
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                    required
+                  >
+                    <option value="">-- Select Product Party --</option>
+                    <option value={ALL_PARTIES_OPTION}>All Parties</option>
+                    {partiesList.map((party) => (
+                      <option key={party.id} value={party.id}>{party.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Master Carton Warehouse</label>
+                  <select
+                    value={masterCartonPartyId}
+                    onChange={(event) => setMasterCartonPartyId(event.target.value)}
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                    required
+                  >
+                    <option value="">-- Select Warehouse --</option>
+                    {partiesList.map((party) => (
+                      <option key={party.id} value={party.id}>{party.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Select Product</label>
+                  <select
+                    value={masterCartonProductId}
+                    onChange={(event) => setMasterCartonProductId(event.target.value)}
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                    required
+                    disabled={!masterCartonProductPartyId}
+                  >
+                    <option value="">-- Select Product --</option>
+                    <option value={ALL_PRODUCTS_OPTION}>All Products (Shared Stock)</option>
+                    {filteredProductsForMasterCarton.map((product) => (
+                      <option key={product.id} value={product.id}>
+                        {masterCartonProductPartyId === ALL_PARTIES_OPTION
+                          ? `${partiesList.find((party) => party.id === product.party_id)?.name ?? "Unknown party"} — ${product.product_name}`
+                          : product.product_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs text-cyan-400 block mb-1">Master Carton Number</label>
+                  <select
+                    value={masterCartonNumber}
+                    onChange={(event) => setMasterCartonNumber(event.target.value)}
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                    required
+                  >
+                    <option value="">-- Select Carton Number --</option>
+                    {masterCartonOptions.map((option) => (
+                      <option key={option.id} value={option.carton_count}>
+                        Carton #{option.carton_count}
+                      </option>
+                    ))}
+                  </select>
+                  {masterCartonOptionsError && (
+                    <p className="mt-1 text-xs text-rose-400">
+                      Could not load carton numbers: {masterCartonOptionsError}
+                    </p>
+                  )}
+                  {!masterCartonOptionsError && masterCartonOptions.length === 0 && (
+                    <p className="mt-1 text-xs text-amber-300">
+                      Admin ko Master Cartons setup mein pehle carton numbers add karne honge.
+                    </p>
+                  )}
+                  {masterCartonNumber && (
+                    <p className="mt-1 text-[10px] text-slate-400">
+                      Enter the quantity of Carton #{masterCartonNumber} received below.
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="text-xs text-amber-400 block mb-1">
+                    Quantity Received (Carton #{masterCartonNumber || "—"})
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={masterCartonQuantity}
+                    onChange={(event) => setMasterCartonQuantity(event.target.value)}
+                    placeholder="e.g. 500 cartons"
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-amber-300 font-mono font-bold"
+                    required
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Plan Type</label>
+                  <input
+                    type="text"
+                    value={masterCartonPlanType}
+                    onChange={(event) => setMasterCartonPlanType(event.target.value)}
+                    placeholder="Enter plan type"
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Nigehban Quantity</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={masterCartonNigehbanQuantity}
+                    onChange={(event) => setMasterCartonNigehbanQuantity(event.target.value)}
+                    placeholder="Enter quantity"
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                    required
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Remarks / Note</label>
+                <input
+                  type="text"
+                  value={masterCartonRemarks}
+                  onChange={(event) => setMasterCartonRemarks(event.target.value)}
+                  placeholder="Supplier details or batch info"
+                  className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-xl transition text-xs shadow-lg"
+              >
+                {loading ? "Saving..." : "Confirm & Save Master Carton Entry"}
+              </button>
+            </form>
           </div>
         )}
 
@@ -1154,7 +1467,9 @@ export default function WarehousePortalPage() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="text-xs text-amber-400 block mb-1">Issue Quantity (Pcs)</label>
+                    <label className="text-xs text-amber-400 block mb-1">
+                      {outComponentType === "master_carton" ? "Master Cartons to Issue" : "Issue Quantity (Pcs)"}
+                    </label>
                     <input
                       type="number"
                       value={outQtyPcs}
@@ -1255,7 +1570,7 @@ export default function WarehousePortalPage() {
                       exportPDFWithLogo(
                         "Warehouse Stock OUT Log",
                         ["Party", "Product", "Component", "Quantity", "Remarks", "Timestamp"],
-                        filteredStockOutLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type.toUpperCase(), `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
+                        filteredStockOutLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type.toUpperCase(), `${l.quantity} ${getQuantityUnit(l.component_type)}`, l.remarks, new Date(l.created_at).toLocaleString()])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -1285,7 +1600,7 @@ export default function WarehousePortalPage() {
                             <div className="text-[10px] text-emerald-400">{log.product_name || "N/A"}</div>
                           </td>
                           <td className="p-3 uppercase text-indigo-300">{log.component_type}</td>
-                          <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{log.quantity} Pcs</td>
+                          <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{log.quantity} {getQuantityUnit(log.component_type)}</td>
                           <td className="p-3 text-slate-400">{log.remarks}</td>
                           <td className="p-3 text-slate-400 whitespace-nowrap">{new Date(log.created_at).toLocaleString()}</td>
                         </tr>
@@ -1349,7 +1664,7 @@ export default function WarehousePortalPage() {
                       exportPDFWithLogo(
                         "Warehouse Inventory Stock Balance",
                         ["Party Name", "Product Name", "Component Type", "Available Quantity"],
-                        filteredStockBalances.map((s) => [s.party_name || "General", s.product_name || "General", s.component_type.toUpperCase(), `${s.quantity || 0} Pcs`])
+                        filteredStockBalances.map((s) => [s.party_name || "General", s.product_name || "General", s.component_type.toUpperCase(), `${s.quantity || 0} ${getQuantityUnit(s.component_type)}`])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -1376,7 +1691,7 @@ export default function WarehousePortalPage() {
                           <td className="p-3 font-bold text-white">{stk.party_name || "General Party"}</td>
                           <td className="p-3 text-emerald-400">{stk.product_name || "General Product"}</td>
                           <td className="p-3 uppercase text-indigo-300">{stk.component_type}</td>
-                          <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{stk.quantity || 0} Pcs</td>
+                          <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{stk.quantity || 0} {getQuantityUnit(stk.component_type)}</td>
                         </tr>
                       ))}
                     </tbody>
