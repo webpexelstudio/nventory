@@ -213,6 +213,34 @@ export default function WarehouseStaffPortal() {
     if (balProductId && s.product_id !== balProductId) return false;
     return true;
   });
+  const getStockBalanceCapacity = (stock: StockBalance) => {
+    const componentType = stock.component_type.trim().toLowerCase();
+    const matchingBom = productBomCapacities.find((bom) => {
+      if (bom.component_type.trim().toLowerCase() !== componentType) return false;
+      const bomProducts = Array.isArray(bom.products) ? bom.products : bom.products ? [bom.products] : [];
+      return bomProducts.some((product) => {
+        const productParties = Array.isArray(product.parties)
+          ? product.parties
+          : product.parties
+            ? [product.parties]
+            : [];
+        return (
+          product.product_name.toLowerCase() === stock.product_name?.toLowerCase() &&
+          productParties.some((party) => party.name.toLowerCase() === stock.party_name.toLowerCase())
+        );
+      });
+    });
+    return matchingBom?.ml_capacity == null
+      ? "—"
+      : `${matchingBom.ml_capacity} ${matchingBom.capacity_unit || "ML"}`;
+  };
+  const getStockBalanceExportRows = () =>
+    filteredStockBalances.map((stock) => ({
+      "Party Name": stock.party_name || "General",
+      "Product Name": stock.product_name || "General",
+      "ML / GM": getStockBalanceCapacity(stock),
+      "Qty": stock.quantity,
+    }));
 
   const filteredStockInLogs = inOutLogs.filter((l) => {
     if (l.action_type !== "IN") return false;
@@ -338,7 +366,7 @@ export default function WarehouseStaffPortal() {
                 <h2 className="text-sm sm:text-md font-bold text-white">Current Inventory Stock Balance</h2>
                 <div className="flex gap-2 w-full sm:w-auto">
                   <button
-                    onClick={() => exportExcel(filteredStockBalances, "Inventory_Balance")}
+                    onClick={() => exportExcel(getStockBalanceExportRows(), "Inventory_Balance")}
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition text-center"
                   >
                     Excel
@@ -347,8 +375,13 @@ export default function WarehouseStaffPortal() {
                     onClick={() =>
                       exportPDFWithLogo(
                         "Warehouse Inventory Stock Balance",
-                        ["Party Name", "Product Name", "Component Type", "Available Quantity"],
-                        filteredStockBalances.map((s) => [s.party_name, s.product_name || "General", s.component_type.toUpperCase(), `${s.quantity} Pcs`])
+                        ["Party Name", "Product Name", "ML / GM", "Qty"],
+                        filteredStockBalances.map((stock) => [
+                          stock.party_name || "General",
+                          stock.product_name || "General",
+                          getStockBalanceCapacity(stock),
+                          stock.quantity,
+                        ])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"

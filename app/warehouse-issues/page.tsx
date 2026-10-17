@@ -729,6 +729,34 @@ export default function WarehousePortalPage() {
     if (balProductId && s.product_id !== balProductId && s.product_name !== productsList.find(p => p.id === balProductId)?.product_name) return false;
     return true;
   });
+  const getStockBalanceCapacity = (stock: StockBalance) => {
+    const componentType = stock.component_type.trim().toLowerCase();
+    const matchingBom = productBomCapacities.find((bom) => {
+      if (bom.component_type.trim().toLowerCase() !== componentType) return false;
+      const bomProducts = Array.isArray(bom.products) ? bom.products : bom.products ? [bom.products] : [];
+      return bomProducts.some((product) => {
+        const productParties = Array.isArray(product.parties)
+          ? product.parties
+          : product.parties
+            ? [product.parties]
+            : [];
+        return (
+          product.product_name.toLowerCase() === stock.product_name?.toLowerCase() &&
+          productParties.some((party) => party.name.toLowerCase() === stock.party_name.toLowerCase())
+        );
+      });
+    });
+    return matchingBom?.ml_capacity == null
+      ? "—"
+      : `${matchingBom.ml_capacity} ${matchingBom.capacity_unit || "ML"}`;
+  };
+  const getStockBalanceExportRows = () =>
+    filteredStockBalances.map((stock) => ({
+      "Party Name": stock.party_name || "General",
+      "Product Name": stock.product_name || "General",
+      "ML / GM": getStockBalanceCapacity(stock),
+      "Qty": `${stock.quantity || 0} ${getQuantityUnit(stock.component_type)}`,
+    }));
 
   return (
     <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-3 sm:p-6 font-sans space-y-6 uppercase">
@@ -1654,7 +1682,7 @@ export default function WarehousePortalPage() {
                 <h2 className="text-sm sm:text-md font-bold text-white">Complete Inventory Stock Balance</h2>
                 <div className="flex gap-2 w-full sm:w-auto">
                   <button
-                    onClick={() => exportExcel(filteredStockBalances, "Complete_Inventory_Balance")}
+                    onClick={() => exportExcel(getStockBalanceExportRows(), "Complete_Inventory_Balance")}
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition text-center"
                   >
                     Excel
@@ -1663,8 +1691,13 @@ export default function WarehousePortalPage() {
                     onClick={() =>
                       exportPDFWithLogo(
                         "Warehouse Inventory Stock Balance",
-                        ["Party Name", "Product Name", "Component Type", "Available Quantity"],
-                        filteredStockBalances.map((s) => [s.party_name || "General", s.product_name || "General", s.component_type.toUpperCase(), `${s.quantity || 0} ${getQuantityUnit(s.component_type)}`])
+                        ["Party Name", "Product Name", "ML / GM", "Qty"],
+                        filteredStockBalances.map((stock) => [
+                          stock.party_name || "General",
+                          stock.product_name || "General",
+                          getStockBalanceCapacity(stock),
+                          `${stock.quantity || 0} ${getQuantityUnit(stock.component_type)}`,
+                        ])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"

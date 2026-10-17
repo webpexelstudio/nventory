@@ -72,6 +72,14 @@ interface MasterCartonProductSettingRow {
   }[];
 }
 
+interface InventoryFilterState {
+  partyName: string;
+  productName: string;
+  startDate: string;
+  endDate: string;
+  action: "ALL" | "IN" | "OUT";
+}
+
 const normalizeComponentTypeKey = (value: string) =>
   value
     .trim()
@@ -226,11 +234,20 @@ export default function AdminPage() {
   const [printRequest, setPrintRequest] = useState<any | null>(null);
   const [printQuantity, setPrintQuantity] = useState("");
 
-  const [filterPartyName, setFilterPartyName] = useState("");
-  const [filterProductName, setFilterProductName] = useState("");
-  const [filterStartDate, setFilterStartDate] = useState("");
-  const [filterEndDate, setFilterEndDate] = useState("");
-  const [filterWarehouseAction, setFilterWarehouseAction] = useState<"ALL" | "IN" | "OUT">("ALL");
+  const [warehouseFilters, setWarehouseFilters] = useState<InventoryFilterState>({
+    partyName: "",
+    productName: "",
+    startDate: "",
+    endDate: "",
+    action: "ALL",
+  });
+  const [inventoryFilters, setInventoryFilters] = useState<InventoryFilterState>({
+    partyName: "",
+    productName: "",
+    startDate: "",
+    endDate: "",
+    action: "ALL",
+  });
 
   let fetchMasterData: () => Promise<void>;
   let fetchAdminPartyViewData: (partyId: string) => Promise<void>;
@@ -754,13 +771,18 @@ export default function AdminPage() {
     }
   };
 
-  const filterByDateAndText = (createdAt?: string, pName?: string, prName?: string) => {
-    if (filterPartyName && pName && !pName.toLowerCase().includes(filterPartyName.toLowerCase())) return false;
-    if (filterProductName && prName && !prName.toLowerCase().includes(filterProductName.toLowerCase())) return false;
+  const filterByDateAndText = (
+    filters: InventoryFilterState,
+    createdAt?: string,
+    pName?: string,
+    prName?: string
+  ) => {
+    if (filters.partyName && pName && !pName.toLowerCase().includes(filters.partyName.toLowerCase())) return false;
+    if (filters.productName && prName && !prName.toLowerCase().includes(filters.productName.toLowerCase())) return false;
     if (createdAt) {
       const itemDate = new Date(createdAt).toISOString().split("T")[0];
-      if (filterStartDate && itemDate < filterStartDate) return false;
-      if (filterEndDate && itemDate > filterEndDate) return false;
+      if (filters.startDate && itemDate < filters.startDate) return false;
+      if (filters.endDate && itemDate > filters.endDate) return false;
     }
     return true;
   };
@@ -1266,19 +1288,13 @@ export default function AdminPage() {
   const defaultWarehousePartyLabel = getAssignedPartyLabel(
     partiesList.find((party) => party.name.toLowerCase().includes("nigehban"))?.name ?? partiesList[0]?.name
   );
-  const filteredParties = partiesList.filter((p) => filterByDateAndText(p.created_at, p.name));
-  const filteredProducts = productsList.filter((prod) =>
-    filterByDateAndText(prod.created_at, prod.parties?.name, prod.product_name)
-  );
-  const filteredBomView = bomViewList.filter((b) =>
-    filterByDateAndText(b.created_at, b.products?.parties?.name, b.products?.product_name)
-  );
-  const filteredFillingLogs = fillingLogs.filter((f) =>
-    filterByDateAndText(f.created_at, f.party_name, f.product_name)
-  );
+  const filteredParties = partiesList;
+  const filteredProducts = productsList;
+  const filteredBomView = bomViewList;
+  const filteredFillingLogs = fillingLogs;
   const filteredWarehouseLogs = warehouseLogs.filter((w) =>
-    (filterWarehouseAction === "ALL" || w.action_type === filterWarehouseAction) &&
-    filterByDateAndText(w.created_at, w.party_name, w.product_name)
+    (warehouseFilters.action === "ALL" || w.action_type === warehouseFilters.action) &&
+    filterByDateAndText(warehouseFilters, w.created_at, w.party_name, w.product_name)
   );
   const getWarehouseComponentLabel = (log: {
     action_type?: string;
@@ -1311,13 +1327,13 @@ export default function AdminPage() {
         log.component_type?.toLowerCase() === stock.component_type?.toLowerCase()
     );
   const filteredInventoryList = inventoryList.filter((stock) => {
-    if (!filterByDateAndText(undefined, stock.party_name, stock.product_name)) return false;
-    if (!filterStartDate && !filterEndDate) return true;
+    if (!filterByDateAndText(inventoryFilters, undefined, stock.party_name, stock.product_name)) return false;
+    if (!inventoryFilters.startDate && !inventoryFilters.endDate) return true;
 
     return getStockMovementLogs(stock).some((log) => {
       const movementDate = new Date(log.created_at).toISOString().split("T")[0];
-      return (!filterStartDate || movementDate >= filterStartDate) &&
-        (!filterEndDate || movementDate <= filterEndDate);
+      return (!inventoryFilters.startDate || movementDate >= inventoryFilters.startDate) &&
+        (!inventoryFilters.endDate || movementDate <= inventoryFilters.endDate);
     });
   });
   const masterCartonInventory = inventoryList.filter(
@@ -1327,28 +1343,32 @@ export default function AdminPage() {
     (log) => log.component_type?.trim().toLowerCase() === "master_carton"
   );
 
-  const renderInventoryFilters = (showActionFilter = false) => (
+  const renderInventoryFilters = (
+    filters: InventoryFilterState,
+    setFilters: (filters: InventoryFilterState) => void,
+    showActionFilter = false
+  ) => (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
       <input
         type="text"
-        value={filterPartyName}
-        onChange={(event) => setFilterPartyName(event.target.value)}
+        value={filters.partyName}
+        onChange={(event) => setFilters({ ...filters, partyName: event.target.value })}
         placeholder="Filter party"
         aria-label="Filter by party"
         className="bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
       />
       <input
         type="text"
-        value={filterProductName}
-        onChange={(event) => setFilterProductName(event.target.value)}
+        value={filters.productName}
+        onChange={(event) => setFilters({ ...filters, productName: event.target.value })}
         placeholder="Filter product"
         aria-label="Filter by product"
         className="bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
       />
       {showActionFilter && (
         <select
-          value={filterWarehouseAction}
-          onChange={(event) => setFilterWarehouseAction(event.target.value as "ALL" | "IN" | "OUT")}
+          value={filters.action}
+          onChange={(event) => setFilters({ ...filters, action: event.target.value as InventoryFilterState["action"] })}
           aria-label="Filter by movement type"
           className="bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
         >
@@ -1359,15 +1379,15 @@ export default function AdminPage() {
       )}
       <input
         type="date"
-        value={filterStartDate}
-        onChange={(event) => setFilterStartDate(event.target.value)}
+        value={filters.startDate}
+        onChange={(event) => setFilters({ ...filters, startDate: event.target.value })}
         aria-label="Filter from date"
         className="bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
       />
       <input
         type="date"
-        value={filterEndDate}
-        onChange={(event) => setFilterEndDate(event.target.value)}
+        value={filters.endDate}
+        onChange={(event) => setFilters({ ...filters, endDate: event.target.value })}
         aria-label="Filter to date"
         className="bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
       />
@@ -2033,7 +2053,7 @@ export default function AdminPage() {
         {activeTab === "warehouse" && (
           <div className="bg-[#121827] border border-slate-800 rounded-xl p-6 shadow-lg space-y-4 uppercase">
             <h2 className="text-md font-semibold text-slate-200">Warehouse Register (Live Database)</h2>
-            {renderInventoryFilters(true)}
+            {renderInventoryFilters(warehouseFilters, setWarehouseFilters, true)}
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs text-slate-300">
                 <thead className="bg-[#0b0f19] text-slate-400 uppercase">
@@ -2062,7 +2082,7 @@ export default function AdminPage() {
         {activeTab === "inventory" && (
           <div className="bg-[#121827] border border-slate-800 p-6 rounded-xl space-y-4 uppercase">
             <h2 className="text-md font-semibold text-white">Master Inventory Stock Balance (Live Database)</h2>
-            {renderInventoryFilters()}
+            {renderInventoryFilters(inventoryFilters, setInventoryFilters)}
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs text-slate-300">
                 <thead className="bg-[#0b0f19] text-slate-400 uppercase">
