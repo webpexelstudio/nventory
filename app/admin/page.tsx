@@ -54,7 +54,8 @@ interface MasterCartonProductSetting {
 
 interface MasterCartonOption {
   id: string;
-  carton_count: number;
+  carton_count: number | null;
+  carton_name: string | null;
   alert_threshold?: number | null;
 }
 
@@ -94,6 +95,9 @@ const formatComponentTypeLabel = (value: string) =>
     .replace(/[_\-]+/g, " ")
     .replace(/\s+/g, " ")
     .toUpperCase();
+
+const getMasterCartonOptionLabel = (option: MasterCartonOption) =>
+  option.carton_name || `Carton #${option.carton_count}`;
 
 const getAssignedPartyLabel = (partyName?: string) => {
   const normalized = (partyName ?? "").trim();
@@ -394,8 +398,8 @@ export default function AdminPage() {
     const packSize = request.pack_size
       ? `${request.pack_size} ${request.pack_unit || "ML"}`
       : packSizeBom
-      ? `${packSizeBom.ml_capacity} ${packSizeBom.capacity_unit || "ML"}`
-      : "—";
+        ? `${packSizeBom.ml_capacity} ${packSizeBom.capacity_unit || "ML"}`
+        : "—";
     const party = partiesList.find((item) => item.id === request.party_id)?.name || request.party_name;
     const product = productsList.find((item) => item.id === request.product_id)?.product_name || request.product_name;
     const batchNo = request.batch_no || request.req_code || "—";
@@ -546,7 +550,7 @@ export default function AdminPage() {
       if (savedTypesError) {
         setComponentTypesError(savedTypesError.message);
       } else {
-        const savedTypeNames = ((savedTypes ?? []) as Array<{ component_type?: string | null; name?: string | null }> )
+        const savedTypeNames = ((savedTypes ?? []) as Array<{ component_type?: string | null; name?: string | null }>)
           .map((option) => normalizeComponentTypeOptionValue(option))
           .filter(Boolean);
         setSavedComponentTypes(savedTypeNames);
@@ -609,7 +613,7 @@ export default function AdminPage() {
 
       const { data: cartonOptions, error: cartonOptionsError } = await supabase
         .from("master_carton_options")
-        .select("id, carton_count, alert_threshold")
+        .select("id, carton_count, carton_name, alert_threshold")
         .order("carton_count");
       if (cartonOptionsError) {
         setMasterCartonOptionsError(cartonOptionsError.message);
@@ -626,13 +630,25 @@ export default function AdminPage() {
 
   const handleAddMasterCartonOption = async (event: React.FormEvent) => {
     event.preventDefault();
-    const cartonCount = Number(newMasterCartonOption);
-    const alertThreshold = Number(newMasterCartonAlertThreshold);
-    if (!Number.isSafeInteger(cartonCount) || cartonCount <= 0) {
-      alert("Please enter a whole number greater than zero.");
+
+    const cartonOptionValue = newMasterCartonOption.trim();
+    if (!cartonOptionValue) {
+      alert("Please enter a valid carton name or type.");
       return;
     }
-    if (!Number.isSafeInteger(alertThreshold) || alertThreshold < 0) {
+    const isNumericCartonCount = /^\d+$/.test(cartonOptionValue);
+    const cartonCount = isNumericCartonCount ? Number(cartonOptionValue) : null;
+    if (isNumericCartonCount && (
+      cartonCount === null ||
+      !Number.isSafeInteger(cartonCount) ||
+      cartonCount <= 0
+    )) {
+      alert("Numeric carton options must be a whole number greater than zero.");
+      return;
+    }
+
+    const alertThreshold = Number(newMasterCartonAlertThreshold);
+    if (!Number.isInteger(alertThreshold) || alertThreshold < 0) {
       alert("Alert threshold must be zero or a positive whole number.");
       return;
     }
@@ -641,27 +657,31 @@ export default function AdminPage() {
     try {
       const { data, error } = await supabase
         .from("master_carton_options")
-        .insert({ carton_count: cartonCount, alert_threshold: alertThreshold })
-        .select("id, carton_count, alert_threshold")
+        .insert({
+          carton_count: cartonCount,
+          carton_name: cartonCount === null ? cartonOptionValue : null,
+          alert_threshold: alertThreshold,
+        })
+        .select("id, carton_count, carton_name, alert_threshold")
         .single();
+
       if (error) throw error;
       if (!data) throw new Error("The database did not return the new carton option.");
-      setMasterCartonOptions((current) =>
-        [...current, data].sort((a, b) => a.carton_count - b.carton_count)
-      );
+
+      setMasterCartonOptions((current) => [...current, data]);
       setNewMasterCartonOption("");
       setNewMasterCartonAlertThreshold("0");
       setMasterCartonOptionsError(null);
     } catch (err: unknown) {
       console.error("Could not add Master Carton option:", err);
-      alert("Could not add Master Carton option: " + formatDatabaseError(err));
+      alert("Could not add Master Carton option: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setLoading(false);
     }
   };
 
   const handleDeleteMasterCartonOption = async (option: MasterCartonOption) => {
-    if (!confirm(`Remove ${option.carton_count} cartons from the Filling dropdown?`)) return;
+    if (!confirm(`Remove ${getMasterCartonOptionLabel(option)} from the carton options?`)) return;
     setLoading(true);
     try {
       const { error } = await supabase
@@ -1271,13 +1291,13 @@ export default function AdminPage() {
   const availableProductsForBom = productsList.filter((p) => p.party_id === selectedPartyForBom);
   const selectedProductSavedBomTypes = selectedProductForBom
     ? Array.from(
-        new Set(
-          bomViewList
-            .filter((bom) => bom.product_id === selectedProductForBom)
-            .map((bom) => bom.component_type.trim().toLowerCase())
-            .filter(Boolean)
-        )
+      new Set(
+        bomViewList
+          .filter((bom) => bom.product_id === selectedProductForBom)
+          .map((bom) => bom.component_type.trim().toLowerCase())
+          .filter(Boolean)
       )
+    )
     : [];
   const partyProductCounts = partiesList.reduce<Record<string, number>>((acc, party) => {
     acc[party.id] = productsList.filter((product) => product.party_id === party.id).length;
@@ -1608,7 +1628,7 @@ export default function AdminPage() {
             <div>
               <h2 className="text-md font-semibold text-slate-200">Master Carton Setup</h2>
               <p className="mt-1 text-xs text-slate-400">
-                Add carton-count choices here for the Filling dropdown. Product defaults saved by Filling can be managed below.
+                Add numeric carton counts for Filling or named carton types for warehouse stock in/out. Product defaults saved by Filling can be managed below.
               </p>
               <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-200">
                 Assigned warehouse: {defaultWarehousePartyLabel}
@@ -1617,18 +1637,16 @@ export default function AdminPage() {
             <form onSubmit={handleAddMasterCartonOption} className="flex flex-col gap-3">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <input
-                  type="number"
-                  min="1"
-                  step="1"
+                  type="text"
                   value={newMasterCartonOption}
                   onChange={(event) => setNewMasterCartonOption(event.target.value)}
-                  placeholder="Enter carton number"
-                  aria-label="New carton number option"
+                  placeholder="Enter carton name or type (e.g. Box A)"
+                  aria-label="New carton option"
                   className="bg-[#0b0f19] border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200"
                   required
                 />
                 <input
-                  type="number"
+                  type="text"
                   min="0"
                   step="1"
                   value={newMasterCartonAlertThreshold}
@@ -1654,18 +1672,17 @@ export default function AdminPage() {
             <div className="flex flex-wrap gap-2">
               {masterCartonOptions.map((option) => {
                 const threshold = option.alert_threshold ?? 0;
-                const isLowAlert = threshold > 0 && option.carton_count <= threshold;
+                const isLowAlert = threshold > 0 && option.carton_count !== null && option.carton_count <= threshold;
                 return (
                   <span
                     key={option.id}
-                    className={`border px-3 py-2 rounded-lg text-sm flex items-center gap-3 ${
-                      isLowAlert
+                    className={`border px-3 py-2 rounded-lg text-sm flex items-center gap-3 ${isLowAlert
                         ? "bg-rose-500/10 text-rose-200 border-rose-500/40"
                         : "bg-slate-800 text-cyan-300 border-slate-700"
-                    }`}
+                      }`}
                   >
                     <span>
-                      {option.carton_count} cartons
+                      {getMasterCartonOptionLabel(option)}
                       <span className="ml-2 text-[10px] uppercase tracking-[0.14em] text-slate-300">
                         alert ≤ {threshold}
                       </span>
@@ -1674,7 +1691,7 @@ export default function AdminPage() {
                       type="button"
                       onClick={() => handleDeleteMasterCartonOption(option)}
                       disabled={loading}
-                      aria-label={`Remove ${option.carton_count}-carton dropdown option`}
+                      aria-label={`Remove ${getMasterCartonOptionLabel(option)} dropdown option`}
                       className="text-rose-400 hover:text-rose-200 font-bold"
                     >
                       ×
@@ -1812,7 +1829,7 @@ export default function AdminPage() {
                     <tr>
                       <th className="p-3">Party</th>
                       <th className="p-3">Product</th>
-                      <th className="p-3">Carton Number</th>
+                      <th className="p-3">Carton Number / Name</th>
                       <th className="p-3">Current Master Cartons</th>
                     </tr>
                   </thead>
@@ -1821,7 +1838,7 @@ export default function AdminPage() {
                       <tr key={stock.id}>
                         <td className="p-3 font-semibold">{stock.party_name || "—"}</td>
                         <td className="p-3 text-emerald-400">{stock.product_name || "—"}</td>
-                        <td className="p-3 font-mono">{stock.carton_count ? `#${stock.carton_count}` : "Shared / unspecified"}</td>
+                        <td className="p-3 font-mono">{stock.carton_name || (stock.carton_count ? `#${stock.carton_count}` : "Shared / unspecified")}</td>
                         <td className="p-3 font-mono font-bold text-amber-300">{stock.quantity ?? 0}</td>
                       </tr>
                     ))}
@@ -1842,7 +1859,7 @@ export default function AdminPage() {
                       <th className="p-3">Type</th>
                       <th className="p-3">Party</th>
                       <th className="p-3">Product</th>
-                      <th className="p-3">Carton Number</th>
+                      <th className="p-3">Carton Number / Name</th>
                       <th className="p-3">Quantity</th>
                       <th className="p-3">Plan Type</th>
                       <th className="p-3">Nigehban Quantity</th>
@@ -1856,7 +1873,7 @@ export default function AdminPage() {
                         <td className="p-3">{log.action_type}</td>
                         <td className="p-3 font-semibold">{log.party_name || "—"}</td>
                         <td className="p-3 text-emerald-400">{log.product_name || "—"}</td>
-                        <td className="p-3 font-mono">{log.carton_count ? `#${log.carton_count}` : "Shared / unspecified"}</td>
+                        <td className="p-3 font-mono">{log.carton_name || (log.carton_count ? `#${log.carton_count}` : "Shared / unspecified")}</td>
                         <td className="p-3 font-mono text-amber-300">{log.quantity ?? 0} {log.component_type?.trim().toLowerCase() === "master_carton" ? "Cartons" : "Pcs"}</td>
                         <td className="p-3">{log.plan_type || "—"}</td>
                         <td className="p-3 font-mono">{log.nigehban_quantity ?? "—"}</td>

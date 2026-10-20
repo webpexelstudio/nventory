@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
@@ -21,9 +21,31 @@ interface Party {
 
 interface MasterCartonOption {
   id: string;
-  carton_count: number;
+  carton_count: number | null;
+  carton_name: string | null;
   alert_threshold?: number | null;
 }
+
+const normalizeMasterCartonOption = (option: {
+  id: string;
+  carton_count: number | string | null;
+  carton_name?: string | null;
+  alert_threshold?: number | null;
+}): MasterCartonOption => {
+  const rawCount = String(option.carton_count ?? "").trim();
+  const numericCount = /^\d+$/.test(rawCount) ? Number(rawCount) : null;
+  return {
+    id: option.id,
+    carton_count: numericCount !== null && Number.isSafeInteger(numericCount) && numericCount > 0
+      ? numericCount
+      : null,
+    carton_name: option.carton_name?.trim() || (rawCount && numericCount === null ? rawCount : null),
+    alert_threshold: option.alert_threshold ?? null,
+  };
+};
+
+const getMasterCartonOptionLabel = (option: MasterCartonOption) =>
+  option.carton_name || `Carton #${option.carton_count}`;
 
 interface MasterCartonProductSetting {
   carton_count: number;
@@ -37,6 +59,19 @@ const isMissingCartonPcsColumnError = (error: unknown) => {
   return (
     (details.code === "42703" || message.includes("schema cache")) &&
     message.includes("carton_pcs")
+  );
+};
+
+const isMissingCartonNameColumnError = (error: unknown) => {
+  if (typeof error !== "object" || error === null) return false;
+  const details = error as { code?: unknown; message?: unknown; details?: unknown };
+  const message = `${details.message ?? ""} ${details.details ?? ""}`.toLowerCase();
+  return (
+    message.includes("carton_name") &&
+    (details.code === "42703" ||
+      details.code === "PGRST204" ||
+      message.includes("schema cache") ||
+      message.includes("does not exist"))
   );
 };
 
@@ -85,12 +120,38 @@ interface BomComponentRequirement {
   component_type: string;
   qty_per_unit: number;
   available_stock: number;
+  weight_10_pcs_grams: number;
+}
+
+interface ProductBomRow {
+  component_type?: string | null;
+  component_name?: string | null;
+  ml_capacity?: number | null;
+  capacity_unit?: "ML" | "GM" | null;
+  weight_10_pcs_grams?: number | null;
+  qty_per_unit?: number | null;
+  quantity?: number | null;
+}
+
+interface InventoryRow {
+  component_type?: string | null;
+  product_id?: string | null;
+  quantity?: number | null;
 }
 
 interface WarehousePackagingStock {
   component_type: string;
   quantity: number;
   carton_count?: number | null;
+  carton_name?: string | null;
+}
+
+interface WarehousePackagingStockRow {
+  component_type: string | null;
+  quantity: number | null;
+  product_id: string | null;
+  carton_count: number | null;
+  carton_name?: string | null;
 }
 
 interface FillingRequest {
@@ -155,7 +216,7 @@ export default function FillingInchargePage() {
   const [masterCartonSettingError, setMasterCartonSettingError] = useState<string | null>(null);
   const cartonLookupSequence = useRef(0);
 
-  const [batchNo, setBatchNo] = useState<string>(`BATCH-${Math.floor(1000 + Math.random() * 9000)}`);
+  const [batchNo, setBatchNo] = useState<string>("BATCH-");
   const [mfgDate, setMfgDate] = useState<string>(new Date().toISOString().split("T")[0]);
   const [expDate, setExpDate] = useState<string>("");
   const [retailPrice, setRetailPrice] = useState<string>("");
@@ -163,6 +224,7 @@ export default function FillingInchargePage() {
   const [productPackUnit, setProductPackUnit] = useState<"ML" | "GM">("ML");
   const [roomNumber, setRoomNumber] = useState("");
   const [masterCartonCount, setMasterCartonCount] = useState("");
+  const [selectedMasterCartonName, setSelectedMasterCartonName] = useState("");
   const [masterCartonPcs, setMasterCartonPcs] = useState("");
   const [masterCartonWarehousePartyId, setMasterCartonWarehousePartyId] = useState("");
 
@@ -174,6 +236,8 @@ export default function FillingInchargePage() {
   const [productBomPreview, setProductBomPreview] = useState<BomComponentRequirement[]>([]);
   const [warehousePackagingStock, setWarehousePackagingStock] = useState<WarehousePackagingStock[]>([]);
   const [warehousePackagingStockError, setWarehousePackagingStockError] = useState<string | null>(null);
+  const [warehousePackagingStockNotice, setWarehousePackagingStockNotice] = useState<string | null>(null);
+  const [warehouseCartonNameColumnAvailable, setWarehouseCartonNameColumnAvailable] = useState(true);
   const [warehousePackagingStockLoading, setWarehousePackagingStockLoading] = useState(false);
   const [stockErrorMsg, setStockErrorMsg] = useState<string | null>(null);
   const [maxPossiblePcs, setMaxPossiblePcs] = useState<number | null>(null);
@@ -185,16 +249,69 @@ export default function FillingInchargePage() {
   const [filterStartDate, setFilterStartDate] = useState("");
   const [filterEndDate, setFilterEndDate] = useState("");
 
-  useEffect(() => {
-    fetchLiveSupabaseData();
+  const fetchLiveSupabaseData = useCallback(async () => {
+    try {
+      const { data: partyData, error: partyError } = await supabase.from("parties").select("*");
+      if (partyError) throw partyError;
+      if (partyData) {
+        setPartiesList(partyData);
+        const defaultWarehouseId = getDefaultWarehousePartyId(partyData);
+        setMasterCartonWarehousePartyId((current) => current || defaultWarehouseId);
+      }
+
+      const { data: prodData, error: productsError } = await supabase.from("products").select("*");
+      if (productsError) throw productsError;
+      if (prodData) setProductsList(prodData);
+
+      const { data: cartonOptions, error: cartonOptionsError } = await supabase
+        .from("master_carton_options")
+        .select("id, carton_count, carton_name, alert_threshold")
+        .order("carton_count");
+      if (cartonOptionsError) {
+        if (isMissingCartonNameColumnError(cartonOptionsError)) {
+          const legacyOptions = await supabase
+            .from("master_carton_options")
+            .select("id, carton_count, alert_threshold")
+            .order("carton_count");
+          if (legacyOptions.error) {
+            setMasterCartonOptionsError(legacyOptions.error.message);
+            console.error("Master Carton options fetch error:", legacyOptions.error.message);
+          } else {
+            setMasterCartonOptions(
+              (legacyOptions.data ?? []).map((option) =>
+                normalizeMasterCartonOption({ ...option, carton_name: null })
+              )
+            );
+            setMasterCartonOptionsError(null);
+          }
+        } else {
+          setMasterCartonOptionsError(cartonOptionsError.message);
+          console.error("Master Carton options fetch error:", cartonOptionsError.message);
+        }
+      } else {
+        setMasterCartonOptionsError(null);
+        setMasterCartonOptions((cartonOptions ?? []).map(normalizeMasterCartonOption));
+      }
+
+      const { data: reqData, error: reqErr } = await supabase
+        .from("filling_requests")
+        .select("*");
+      if (reqErr) throw reqErr;
+      if (reqData) setFillingRequests(reqData as FillingRequest[]);
+    } catch (error) {
+      console.error("Could not refresh filling page data:", error);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void Promise.resolve().then(fetchLiveSupabaseData);
+  }, [fetchLiveSupabaseData]);
 
   useEffect(() => {
     const lookupSequence = ++packagingStockLookupSequence.current;
     if (!selectedProductId || !masterCartonWarehousePartyId) {
-      setWarehousePackagingStock([]);
-      setWarehousePackagingStockError(null);
-      setWarehousePackagingStockLoading(false);
       return;
     }
 
@@ -204,15 +321,36 @@ export default function FillingInchargePage() {
       const requestId = ++requestSequence;
       setWarehousePackagingStockLoading(true);
       setWarehousePackagingStockError(null);
+      setWarehousePackagingStockNotice(null);
       try {
-        const { data, error } = await supabase
+        const stockResult = await supabase
           .from("inventory")
-          .select("component_type, quantity, product_id, carton_count")
+          .select("component_type, quantity, product_id, carton_count, carton_name")
           .eq("party_id", masterCartonWarehousePartyId);
+        let data = stockResult.data as WarehousePackagingStockRow[] | null;
+        let error = stockResult.error;
+        let cartonNameColumnAvailable = true;
+        if (isMissingCartonNameColumnError(error)) {
+          const legacyResult = await supabase
+            .from("inventory")
+            .select("component_type, quantity, product_id, carton_count")
+            .eq("party_id", masterCartonWarehousePartyId);
+          data = legacyResult.data as WarehousePackagingStockRow[] | null;
+          error = legacyResult.error;
+          cartonNameColumnAvailable = false;
+        }
         if (error) throw error;
         if (disposed || lookupSequence !== packagingStockLookupSequence.current || requestId !== requestSequence) return;
+        if (!cartonNameColumnAvailable) {
+          setWarehouseCartonNameColumnAvailable(false);
+          setWarehousePackagingStockNotice(
+            "Supabase migration 20261029000000_add_named_master_carton_stock.sql is needed to separate cartons by name. Showing the total master-carton stock for this product."
+          );
+        } else {
+          setWarehouseCartonNameColumnAvailable(true);
+        }
 
-        const productRows = (data ?? []).filter(
+        const productRows = ((data ?? []) as WarehousePackagingStockRow[]).filter(
           (row) => row.product_id === selectedProductId || !row.product_id
         );
         const stockByComponentAndNumber = new Map<string, WarehousePackagingStock>();
@@ -220,11 +358,13 @@ export default function FillingInchargePage() {
           const componentType = String(row.component_type ?? "").trim().toLowerCase();
           if (!componentType) continue;
           const cartonCount = row.carton_count == null ? null : Number(row.carton_count);
-          const key = `${componentType}:${cartonCount ?? "unspecified"}`;
+          const cartonName = typeof row.carton_name === "string" ? row.carton_name.trim() : "";
+          const key = `${componentType}:${cartonCount ?? "unspecified"}:${cartonName.toLowerCase()}`;
           const existing = stockByComponentAndNumber.get(key);
           stockByComponentAndNumber.set(key, {
             component_type: componentType,
             carton_count: cartonCount,
+            carton_name: cartonName || null,
             quantity: (existing?.quantity ?? 0) + (Number(row.quantity) || 0),
           });
         }
@@ -233,7 +373,7 @@ export default function FillingInchargePage() {
         if (disposed || lookupSequence !== packagingStockLookupSequence.current || requestId !== requestSequence) return;
         console.error("Could not load warehouse packaging stock:", error);
         setWarehousePackagingStockError(
-          error instanceof Error ? error.message : "Could not load carton and tape stock from this warehouse."
+          getMasterCartonErrorMessage(error, "Could not load carton and tape stock from this warehouse.")
         );
       } finally {
         if (!disposed && lookupSequence === packagingStockLookupSequence.current && requestId === requestSequence) {
@@ -259,50 +399,7 @@ export default function FillingInchargePage() {
       void supabase.removeChannel(inventoryChannel);
       packagingStockLookupSequence.current += 1;
     };
-  }, [masterCartonWarehousePartyId, selectedProductId, masterCartonCount]);
-
-  const fetchLiveSupabaseData = async () => {
-    setLoading(true);
-    try {
-      const { data: partyData } = await supabase.from("parties").select("*");
-      if (partyData) {
-        setPartiesList(partyData);
-        const defaultWarehouseId = getDefaultWarehousePartyId(partyData);
-        setMasterCartonWarehousePartyId((current) => current || defaultWarehouseId);
-      }
-
-      const { data: prodData } = await supabase.from("products").select("*");
-      if (prodData) setProductsList(prodData);
-
-      const { data: cartonOptions, error: cartonOptionsError } = await supabase
-        .from("master_carton_options")
-        .select("id, carton_count, alert_threshold")
-        .order("carton_count");
-      if (cartonOptionsError) {
-        setMasterCartonOptionsError(cartonOptionsError.message);
-        console.error("Master Carton options fetch error:", cartonOptionsError.message);
-      } else {
-        setMasterCartonOptionsError(null);
-        setMasterCartonOptions(cartonOptions ?? []);
-      }
-
-      const { data: reqData, error: reqErr } = await supabase
-        .from("filling_requests")
-        .select("*");
-
-      if (reqErr) {
-        console.warn("Filling Requests fetch error:", reqErr.message);
-      }
-
-      if (reqData) {
-        setFillingRequests(reqData as FillingRequest[]);
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [masterCartonWarehousePartyId, selectedProductId]);
 
   // 100% DYNAMIC LIVE STOCK FETCHING FROM SUPABASE INVENTORY TABLE
   const handleProductSelection = async (prodId: string) => {
@@ -313,7 +410,13 @@ export default function FillingInchargePage() {
     setProductBomPreview([]);
     setProductPackSize(null);
     setProductPackUnit("ML");
+    setWarehousePackagingStock([]);
+    setWarehousePackagingStockError(null);
+    setWarehousePackagingStockNotice(null);
+    setWarehouseCartonNameColumnAvailable(true);
+    setWarehousePackagingStockLoading(false);
     setMasterCartonCount("");
+    setSelectedMasterCartonName("");
     setMasterCartonPcs("");
     setMasterCartonSettingExists(false);
     setMasterCartonSettingError(null);
@@ -357,62 +460,67 @@ export default function FillingInchargePage() {
       }
 
       // 1. Fetch Product BOM Breakdown
-      const { data: bomData } = await supabase
+      const { data: bomData, error: bomError } = await supabase
         .from("product_bom")
         .select("*")
         .eq("product_id", prodId);
+      if (bomError) throw bomError;
+      if (lookupSequence !== cartonLookupSequence.current) return;
+      const bomRows = (bomData ?? []) as ProductBomRow[];
       const packSizeBom = bomData?.find(
-        (item: any) => item.component_type?.toLowerCase() === "bottle" && Number(item.ml_capacity) > 0
+        (item) => item.component_type?.toLowerCase() === "bottle" && Number(item.ml_capacity) > 0
       ) ?? bomData?.find(
-        (item: any) => item.component_type?.toLowerCase() === "tube" && Number(item.ml_capacity) > 0
-      ) ?? bomData?.find((item: any) => Number(item.ml_capacity) > 0);
+        (item) => item.component_type?.toLowerCase() === "tube" && Number(item.ml_capacity) > 0
+      ) ?? bomData?.find((item) => Number(item.ml_capacity) > 0);
       if (packSizeBom) {
         setProductPackSize(Number(packSizeBom.ml_capacity));
         setProductPackUnit(packSizeBom.capacity_unit === "GM" ? "GM" : "ML");
       }
 
       // 2. Fetch Live Inventory from DB for the selected Party & Product
-      const { data: invData } = await supabase
+      const { data: invData, error: inventoryError } = await supabase
         .from("inventory")
         .select("*")
         .eq("party_id", selectedPartyId);
+      if (inventoryError) throw inventoryError;
+      if (lookupSequence !== cartonLookupSequence.current) return;
+      const inventoryRows = (invData ?? []) as InventoryRow[];
 
-      if (bomData && bomData.length > 0) {
-        const previewList: BomComponentRequirement[] = bomData.map((item: any) => {
+      if (bomRows.length > 0) {
+        const previewList: BomComponentRequirement[] = bomRows.map((item) => {
           const compType = (item.component_type || item.component_name || "component").trim().toLowerCase();
-          
-          // Match component from inventory table (Party-wise & Component-wise)
-          let liveStock = 0;
-          if (invData && invData.length > 0) {
-            const matchedComp = invData.find(
-              (inv: any) =>
-                inv.component_type?.trim().toLowerCase() === compType &&
-                (inv.product_id === prodId || !inv.product_id)
-            );
-            if (matchedComp) {
-              liveStock = Number(matchedComp.quantity) || 0;
-            }
-          }
+          const liveStock = inventoryRows
+            .filter((inv) =>
+              inv.component_type?.trim().toLowerCase() === compType &&
+              (inv.product_id === prodId || !inv.product_id)
+            )
+            .reduce((total, inv) => total + (Number(inv.quantity) || 0), 0);
 
           return {
             component_type: compType,
-            qty_per_unit: Number(item.qty_per_unit || item.quantity) || 1,
+            qty_per_unit: Number(item.qty_per_unit ?? item.quantity) > 0
+              ? Number(item.qty_per_unit ?? item.quantity)
+              : 1,
             available_stock: liveStock, // Live Dynamic Value from DB
+            weight_10_pcs_grams: Number(item.weight_10_pcs_grams) || 0,
           };
         });
         setProductBomPreview(previewList);
       } else {
         // Fallback with 0 stock if no BOM is configured
         setProductBomPreview([
-          { component_type: "bottle", qty_per_unit: 1, available_stock: 0 },
-          { component_type: "cap", qty_per_unit: 1, available_stock: 0 },
-          { component_type: "nozzle", qty_per_unit: 1, available_stock: 0 },
-          { component_type: "seal", qty_per_unit: 1, available_stock: 0 },
-          { component_type: "carton", qty_per_unit: 0.1, available_stock: 0 },
+          { component_type: "bottle", qty_per_unit: 1, available_stock: 0, weight_10_pcs_grams: 0 },
+          { component_type: "cap", qty_per_unit: 1, available_stock: 0, weight_10_pcs_grams: 0 },
+          { component_type: "nozzle", qty_per_unit: 1, available_stock: 0, weight_10_pcs_grams: 0 },
+          { component_type: "seal", qty_per_unit: 1, available_stock: 0, weight_10_pcs_grams: 0 },
+          { component_type: "carton", qty_per_unit: 0.1, available_stock: 0, weight_10_pcs_grams: 0 },
         ]);
       }
     } catch (err) {
-      console.error("Error fetching live stock:", err);
+      if (lookupSequence === cartonLookupSequence.current) {
+        console.error("Error fetching live stock:", err);
+        setMasterCartonSettingError(getMasterCartonErrorMessage(err, "Could not load product BOM and inventory."));
+      }
     } finally {
       if (lookupSequence === cartonLookupSequence.current) {
         setMasterCartonSettingLoading(false);
@@ -504,13 +612,13 @@ export default function FillingInchargePage() {
     if (
       !selectedProductId ||
       masterCartonSettingExists ||
-      !masterCartonCount ||
+      !Number(masterCartonCount) ||
       masterCartonSettingLoading
     ) return;
 
-    const cartonCount = Number(masterCartonCount);
-    if (!Number.isSafeInteger(cartonCount) || cartonCount <= 0) {
-      setMasterCartonSettingError("Enter a whole number greater than zero.");
+    const trimmedCartonCount = String(masterCartonCount).trim();
+    if (!trimmedCartonCount) {
+      setMasterCartonSettingError("Please select a valid Master Carton option.");
       return;
     }
 
@@ -522,16 +630,21 @@ export default function FillingInchargePage() {
         setMasterCartonSettingError("Enter a whole number of pcs per carton greater than zero.");
         return;
       }
+      const cartonCount = Number(trimmedCartonCount);
+      if (!Number.isSafeInteger(cartonCount) || cartonCount <= 0) {
+        setMasterCartonSettingError("Please select a valid Master Carton option.");
+        return;
+      }
       const savedSetting = await persistMasterCartonSetting(selectedProductId, cartonCount, cartonPcs);
-      if (savedSetting.carton_count !== cartonCount) setMasterCartonCount(String(savedSetting.carton_count));
+      if (String(savedSetting.carton_count) !== trimmedCartonCount) setMasterCartonCount(String(savedSetting.carton_count));
       if (savedSetting.carton_pcs != null) setMasterCartonPcs(String(savedSetting.carton_pcs));
       setMasterCartonSettingExists(true);
     } catch (err) {
       if (!isCartonPcsMigrationRequiredError(err)) {
-        console.error("Could not save product master carton count:", err);
+        console.error("Could not save product master carton option:", err);
       }
       setMasterCartonSettingError(
-        getMasterCartonErrorMessage(err, "Could not save this product's master carton count.")
+        getMasterCartonErrorMessage(err, "Could not save this product's master carton option.")
       );
     } finally {
       setMasterCartonSettingLoading(false);
@@ -574,8 +687,13 @@ export default function FillingInchargePage() {
     setStockErrorMsg(null);
     setMaxPossiblePcs(null);
 
-    const qty = parseInt(qtyVal);
-    if (!qtyVal || isNaN(qty) || productBomPreview.length === 0) return;
+    if (!qtyVal) return;
+    const qty = Number(qtyVal);
+    if (!Number.isSafeInteger(qty) || qty <= 0) {
+      setStockErrorMsg("Quantity must be a whole number greater than zero.");
+      return;
+    }
+    if (productBomPreview.length === 0) return;
 
     const shortages: string[] = [];
     let minAllowed = qty;
@@ -604,6 +722,10 @@ export default function FillingInchargePage() {
     e.preventDefault();
     if (!selectedPartyId || !selectedProductId || !pcsRequested || !batchNo || !expDate || !retailPrice || !roomNumber) {
       return alert("Please fill all required fields including Batch No, Expiry Date, Retail Price, and Room.");
+    }
+    const qty = Number(pcsRequested);
+    if (!Number.isSafeInteger(qty) || qty <= 0) {
+      return alert("Quantity must be a whole number greater than zero.");
     }
 
     if (stockErrorMsg) {
@@ -636,7 +758,7 @@ export default function FillingInchargePage() {
       const partyObj = partiesList.find((p) => p.id === selectedPartyId);
       const prodObj = productsList.find((p) => p.id === selectedProductId);
       const masterCartonWarehouseParty = partiesList.find((p) => p.id === masterCartonWarehousePartyId);
-      const qty = parseInt(pcsRequested) || 0;
+      const qty = Number(pcsRequested);
       const resolvedCartonPcs = cartonPcs ?? (Number.isFinite(qty) && qty > 0 && Number.isFinite(Number(masterCartonPcs)) && Number(masterCartonPcs) > 0 ? Number(masterCartonPcs) : null);
       const effectiveCartonCount =
         savedCartonCount ??
@@ -647,13 +769,13 @@ export default function FillingInchargePage() {
       const generatedComponents: ComponentWeightItem[] = productBomPreview.map((comp) => ({
         component_type: comp.component_type,
         pcs_requested: qty * comp.qty_per_unit,
-        weight_10_pcs_grams: 122,
-        theoretical_weight_kg: (qty * comp.qty_per_unit * 1.22) / 1000,
+        weight_10_pcs_grams: comp.weight_10_pcs_grams,
+        theoretical_weight_kg: (qty * comp.qty_per_unit * comp.weight_10_pcs_grams) / 10000,
       }));
 
       const totalWeight = generatedComponents.reduce((sum, c) => sum + c.theoretical_weight_kg, 0);
 
-      const payload: any = {
+      const payload: Record<string, unknown> = {
         batch_no: batchNo,
         req_code: batchNo,
         mfg_date: mfgDate,
@@ -698,7 +820,7 @@ export default function FillingInchargePage() {
 
       alert(`Filling Requisition (Batch: ${batchNo}) Saved Successfully!`);
 
-      fetchLiveSupabaseData();
+      void fetchLiveSupabaseData();
 
       setSelectedPartyId("");
       setSelectedProductId("");
@@ -716,9 +838,9 @@ export default function FillingInchargePage() {
       setProductBomPreview([]);
       setProductPackSize(null);
       setProductPackUnit("ML");
-      setBatchNo(`BATCH-${Math.floor(1000 + Math.random() * 9000)}`);
-    } catch (err: any) {
-      alert("Database Save Error: " + err.message);
+      setBatchNo("BATCH-");
+    } catch (err) {
+      alert("Database Save Error: " + getMasterCartonErrorMessage(err, "Could not save the filling request."));
     } finally {
       setLoading(false);
     }
@@ -743,21 +865,21 @@ export default function FillingInchargePage() {
 
       alert("Material Received & Verified Successfully!");
       fetchLiveSupabaseData();
-    } catch (err: any) {
-      alert("Update Error: " + err.message);
+    } catch (err) {
+      alert("Update Error: " + getMasterCartonErrorMessage(err, "Could not confirm receipt."));
     } finally {
       setLoading(false);
     }
   };
 
-  const exportExcel = (data: any[], fileName: string) => {
+  const exportExcel = (data: Record<string, unknown>[], fileName: string) => {
     const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
     XLSX.writeFile(workbook, `${fileName}_${new Date().toISOString().split("T")[0]}.xlsx`);
   };
 
-  const exportPDFWithLogo = async (title: string, headers: string[], body: any[][]) => {
+  const exportPDFWithLogo = async (title: string, headers: string[], body: (string | number)[][]) => {
     const doc = new jsPDF();
     const loadImage = (url: string): Promise<HTMLImageElement> => {
       return new Promise((resolve, reject) => {
@@ -771,7 +893,7 @@ export default function FillingInchargePage() {
     try {
       const logoImg = await loadImage(COMPANY_DETAILS.logoPath);
       doc.addImage(logoImg, "PNG", 14, 10, 25, 25);
-    } catch (e) {
+    } catch {
       console.warn("Logo load failed.");
     }
 
@@ -826,10 +948,10 @@ export default function FillingInchargePage() {
   const autoCartonSummary =
     computedCartonQty !== null
       ? {
-          cartons: computedCartonQty,
-          pcsPerCarton: enteredPcsPerCarton,
-          masterWarehouse: masterCartonWarehouseParty?.name ?? "Not selected",
-        }
+        cartons: computedCartonQty,
+        pcsPerCarton: enteredPcsPerCarton,
+        masterWarehouse: masterCartonWarehouseParty?.name ?? "Not selected",
+      }
       : null;
   const selectedMasterCartonThreshold =
     Number(masterCartonCount) > 0
@@ -845,18 +967,44 @@ export default function FillingInchargePage() {
     warehousePackagingStock
       .filter((item) => matches(item.component_type.trim().toLowerCase().replace(/[\s-]+/g, "_")))
       .reduce((total, item) => total + item.quantity, 0);
-  const selectedCartonNumber = Number(masterCartonCount);
-  const masterCartonStock = warehousePackagingStock
-    .filter((item) =>
-      ["carton", "cartons", "master_carton", "master_cartons", "master_carton_box", "master_carton_boxes"].includes(
-        item.component_type.trim().toLowerCase().replace(/[\s-]+/g, "_")
-      ) &&
-      (selectedCartonNumber <= 0 ||
-        item.carton_count === null ||
-        item.carton_count === undefined ||
-        item.carton_count === selectedCartonNumber)
-    )
-    .reduce((total, item) => total + item.quantity, 0);
+const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
+  const trimmedMasterCartonName = selectedMasterCartonName.trim().toLowerCase();
+  const selectedProductName = productsList
+    .find((product) => product.id === selectedProductId)
+    ?.product_name.trim().toLowerCase();
+  const masterCartonInventoryRows = warehousePackagingStock.filter((item) => {
+    const compType = String(item.component_type ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+    return ["carton", "cartons", "master_carton", "master_cartons", "master_carton_box", "master_carton_boxes"].includes(compType);
+  });
+  const selectedNamedCartonRows = masterCartonInventoryRows.filter((item) => {
+    const itemCartonName = item.carton_name?.trim().toLowerCase() ?? "";
+    return itemCartonName && (
+      itemCartonName === trimmedMasterCartonName ||
+      itemCartonName === trimmedMasterCartonCount.toLowerCase() ||
+      itemCartonName === selectedProductName
+    );
+  });
+  const legacyNamedCartonRows = masterCartonInventoryRows.filter((item) =>
+    !item.carton_name?.trim() &&
+    ["", "1"].includes(String(item.carton_count ?? "").trim())
+  );
+  const masterCartonStockRows = !warehouseCartonNameColumnAvailable
+    ? masterCartonInventoryRows
+    : trimmedMasterCartonName
+      ? selectedNamedCartonRows.length > 0
+        ? selectedNamedCartonRows
+        : legacyNamedCartonRows
+      : masterCartonInventoryRows.filter((item) => {
+        const itemCartonCount = String(item.carton_count ?? "").trim().toLowerCase();
+        return !itemCartonCount || itemCartonCount === trimmedMasterCartonCount.toLowerCase();
+      });
+  const masterCartonStock = masterCartonStockRows
+    .reduce((total, item) => total + (Number(item.quantity) || 0), 0);
+  const usingLegacyNamedCartonStock =
+    warehouseCartonNameColumnAvailable &&
+    Boolean(trimmedMasterCartonName) &&
+    selectedNamedCartonRows.length === 0 &&
+    legacyNamedCartonRows.length > 0;
   const tapeStock = getWarehouseComponentStock((componentType) => componentType === "tape" || componentType.endsWith("_tape"));
   const tapeBomRequirement = productBomPreview.find((component) => {
     const normalizedType = component.component_type.trim().toLowerCase().replace(/[\s-]+/g, "_");
@@ -871,18 +1019,6 @@ export default function FillingInchargePage() {
   const tapeShortage =
     requestedTapeQuantity !== null ? Math.max(0, requestedTapeQuantity - tapeStock) : null;
 
-  useEffect(() => {
-    if (!selectedProductId || !pcsRequested) return;
-    if (masterCartonCount) return;
-
-    const qty = Number(pcsRequested);
-    const pcsPerCarton = Number(masterCartonPcs);
-    if (!Number.isFinite(qty) || qty <= 0) return;
-    if (!Number.isFinite(pcsPerCarton) || pcsPerCarton <= 0) return;
-
-    setMasterCartonCount(String(Math.ceil(qty / pcsPerCarton)));
-  }, [selectedProductId, pcsRequested, masterCartonPcs, masterCartonCount]);
-
   return (
     <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-3 sm:p-6 font-sans space-y-6">
       <div className="border-b border-slate-800 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 max-w-7xl mx-auto">
@@ -893,7 +1029,10 @@ export default function FillingInchargePage() {
           <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1">Material Requisition & Weight Verification</h1>
         </div>
         <button
-          onClick={fetchLiveSupabaseData}
+          onClick={() => {
+            setLoading(true);
+            void fetchLiveSupabaseData();
+          }}
           className="w-full sm:w-auto px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold border border-slate-700 text-center"
         >
           🔄 Refresh Live Supabase Data
@@ -920,6 +1059,13 @@ export default function FillingInchargePage() {
                   className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-purple-400 font-mono font-bold"
                   required
                 />
+                <button
+                  type="button"
+                  onClick={() => setBatchNo(`BATCH-${Math.floor(1000 + Math.random() * 9000)}`)}
+                  className="mt-1 text-[10px] text-amber-300 hover:text-amber-200"
+                >
+                  Generate batch number
+                </button>
               </div>
 
               <div>
@@ -967,6 +1113,9 @@ export default function FillingInchargePage() {
                     setSelectedPartyId(e.target.value);
                     setSelectedProductId("");
                     cartonLookupSequence.current += 1;
+                    setWarehousePackagingStock([]);
+                    setWarehousePackagingStockError(null);
+                    setWarehousePackagingStockLoading(false);
                     setMasterCartonCount("");
                     setMasterCartonPcs("");
                     setMasterCartonSettingExists(false);
@@ -1030,6 +1179,8 @@ export default function FillingInchargePage() {
                 <label className="text-xs text-amber-400 block mb-1">Quantity Requested (Pcs)</label>
                 <input
                   type="number"
+                  min="1"
+                  step="1"
                   value={pcsRequested}
                   onChange={(e) => handleQuantityChange(e.target.value)}
                   placeholder="e.g. 3000"
@@ -1075,87 +1226,84 @@ export default function FillingInchargePage() {
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="text-xs text-cyan-400 block mb-1">Master Cartons</label>
+                <label className="text-xs text-cyan-400 block mb-1">Master Carton</label>
                 <select
-                  value={masterCartonCount}
-                  onChange={(e) => setMasterCartonCount(e.target.value)}
+                  value={
+                    masterCartonOptions.find((option) =>
+                      selectedMasterCartonName
+                        ? option.carton_name?.toLowerCase() === selectedMasterCartonName.toLowerCase()
+                        : option.carton_count !== null && String(option.carton_count) === masterCartonCount
+                    )?.id ?? (masterCartonSettingExists && masterCartonCount ? `saved:${masterCartonCount}` : "")
+                  }
+                  onChange={(event) => {
+                    const option = masterCartonOptions.find((item) => item.id === event.target.value);
+                    setMasterCartonSettingError(null);
+                    if (!option) {
+                      setSelectedMasterCartonName("");
+                      setMasterCartonCount("");
+                    } else if (option.carton_name) {
+                      setSelectedMasterCartonName(option.carton_name);
+                      setMasterCartonCount("");
+                    } else {
+                      setSelectedMasterCartonName("");
+                      setMasterCartonCount(String(option.carton_count));
+                    }
+                  }}
                   onBlur={handleSaveInitialMasterCartonCount}
                   disabled={!selectedProductId || masterCartonSettingLoading || masterCartonSettingExists}
                   className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
                 >
                   <option value="">
-                    {selectedProductId ? "-- Select Carton Number --" : "-- Select a product first --"}
+                    {selectedProductId ? "-- Select Master Carton Option --" : "-- Select a product first --"}
                   </option>
                   {masterCartonSettingExists &&
                     masterCartonCount &&
                     !masterCartonOptions.some((option) => String(option.carton_count) === masterCartonCount) && (
-                      <option value={masterCartonCount}>{masterCartonCount} cartons (saved)</option>
+                      <option value={`saved:${masterCartonCount}`}>{masterCartonCount} cartons (saved)</option>
                     )}
                   {masterCartonOptions.map((option) => (
-                    <option key={option.id} value={option.carton_count}>
-                      {option.carton_count} cartons
+                    <option key={option.id} value={option.id}>
+                      {getMasterCartonOptionLabel(option)}
                     </option>
                   ))}
                 </select>
-                {masterCartonSettingExists && (
-                  <p className="mt-1 text-[10px] text-emerald-400">
-                    Saved for this product. Ask admin to change it.
-                  </p>
-                )}
-                {masterCartonSettingLoading && (
-                  <p className="mt-1 text-[10px] text-slate-400">Loading or saving carton count...</p>
-                )}
-                {masterCartonSettingError && (
-                  <p className="mt-1 text-[10px] text-rose-400">
-                    {masterCartonSettingError}
-                  </p>
-                )}
-                {masterCartonOptionsError && (
-                  <p className="mt-1 text-[10px] text-rose-400">
-                    Could not load carton choices: {masterCartonOptionsError}
-                  </p>
-                )}
-                {selectedProductId && !masterCartonSettingExists && !masterCartonSettingError && (
-                  <p className="mt-1 text-[10px] text-slate-500">
-                    Choose a carton number; it will be saved for this product.
-                  </p>
-                )}
               </div>
               <div>
-                <label className="text-xs text-cyan-400 block mb-1">Pcs per Master Carton</label>
+                <label className="text-xs text-slate-400 block mb-1">Pcs per Master Carton</label>
                 <input
                   type="number"
                   min="1"
                   step="1"
                   value={masterCartonPcs}
-                  onChange={(e) => setMasterCartonPcs(e.target.value)}
+                  onChange={(event) => {
+                    setMasterCartonPcs(event.target.value);
+                    setMasterCartonSettingError(null);
+                  }}
                   onBlur={handleSaveMasterCartonPcs}
-                  placeholder={masterCartonSettingExists ? "Enter pcs per carton" : "Enter then save with carton number"}
+                  disabled={!selectedProductId || masterCartonSettingLoading}
+                  placeholder="Enter pcs per carton"
                   className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
                 />
                 {masterCartonSettingExists && masterCartonPcs && (
-                  <p className="mt-1 text-[10px] text-emerald-400">
-                    Saved for this product. Filling will load it next time.
+                  <p className="mt-1 text-[10px] text-slate-400">
+                    Saved for this product. Changes are saved when you leave this field.
                   </p>
                 )}
               </div>
-              <div>
-                <label className="text-xs text-cyan-400 block mb-1">Select Master Carton Warehouse</label>
-                <select
-                  value={masterCartonWarehousePartyId}
-                  onChange={(e) => setMasterCartonWarehousePartyId(e.target.value)}
-                  className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
-                  required={Boolean(selectedProductId)}
-                >
-                  <option value="">-- Select warehouse --</option>
-                  {partiesList.map((party) => (
-                    <option key={party.id} value={party.id}>{party.name}</option>
-                  ))}
-                </select>
-              </div>
             </div>
+            {masterCartonSettingLoading && (
+              <p className="text-[10px] text-slate-400">Loading or saving carton settings...</p>
+            )}
+            {masterCartonSettingError && (
+              <p role="alert" className="text-xs text-rose-400">{masterCartonSettingError}</p>
+            )}
+            {masterCartonOptionsError && (
+              <p role="alert" className="text-xs text-rose-400">
+                Could not load carton choices: {masterCartonOptionsError}
+              </p>
+            )}
 
             {/* LIVE DYNAMIC STOCK CARDS DISPLAY */}
             {productBomPreview.length > 0 && (
@@ -1168,7 +1316,7 @@ export default function FillingInchargePage() {
                     <div key={idx} className="bg-[#121827] border border-slate-800/80 p-2.5 rounded-lg text-center">
                       <div className="text-[10px] text-slate-400 uppercase">{comp.component_type}</div>
                       <div className="text-xs font-mono font-bold text-white mt-0.5">
-                        {pcsRequested ? parseInt(pcsRequested || "0") * comp.qty_per_unit : 0} Pcs
+                        {pcsRequested ? Number(pcsRequested) * comp.qty_per_unit : 0} Pcs
                       </div>
                       <div className="text-[9px] text-emerald-400 font-bold mt-1">
                         Live Stock: {comp.available_stock} Pcs
@@ -1183,11 +1331,25 @@ export default function FillingInchargePage() {
               <div className="bg-[#0b0f19] border border-slate-800 p-4 rounded-xl space-y-3">
                 <div>
                   <span className="text-[11px] font-bold text-cyan-300 uppercase tracking-wider block">
-                    Master Carton & Tape Stock — {masterCartonWarehouseParty?.name ?? "Select a warehouse"}
+                    Master Carton & Tape Stock
                   </span>
                   <span className="text-[10px] text-slate-400">
                     Live stock for this product from the selected master carton warehouse.
                   </span>
+                  <select
+                    value={masterCartonWarehousePartyId}
+                    onChange={(event) => setMasterCartonWarehousePartyId(event.target.value)}
+                    aria-label="Master carton stock warehouse"
+                    className="mt-2 w-full sm:max-w-sm bg-[#0b0f19] border border-slate-800 rounded-lg p-2 text-xs text-white"
+                  >
+                    <option value="">-- Select Master Carton Warehouse --</option>
+                    {partiesList.map((party) => (
+                      <option key={party.id} value={party.id}>{party.name}</option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-[10px] text-cyan-300">
+                    Selected warehouse: {masterCartonWarehouseParty?.name ?? "None"}
+                  </p>
                 </div>
                 {warehousePackagingStockLoading && (
                   <p className="text-xs text-slate-400">Loading warehouse carton and tape balances...</p>
@@ -1195,11 +1357,21 @@ export default function FillingInchargePage() {
                 {warehousePackagingStockError && (
                   <p className="text-xs text-rose-400">Could not check warehouse stock: {warehousePackagingStockError}</p>
                 )}
+                {warehousePackagingStockNotice && (
+                  <p className="text-xs text-amber-300">{warehousePackagingStockNotice}</p>
+                )}
+                {usingLegacyNamedCartonStock && (
+                  <p className="text-xs text-amber-300">
+                    Showing older unlabelled carton stock for this product. Apply the named-carton migration and re-enter stock to track carton types separately.
+                  </p>
+                )}
                 {!warehousePackagingStockLoading && !warehousePackagingStockError && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className={`rounded-lg border p-3 ${masterCartonShortage !== null && masterCartonShortage > 0 ? "border-rose-500/50 bg-rose-500/10" : "border-slate-700 bg-[#121827]"}`}>
                       <div className="text-[10px] uppercase tracking-wider text-slate-400">
-                        Master Cartons{selectedCartonNumber > 0 ? ` — Carton #${selectedCartonNumber}` : ""}
+                        Master Cartons{selectedMasterCartonName
+                          ? ` — ${selectedMasterCartonName}`
+                          : masterCartonCount ? ` — ${masterCartonCount}` : ""}
                       </div>
                       <div className="mt-1 text-xs text-slate-200">
                         Available: <strong className="text-white">{masterCartonStock}</strong>
@@ -1411,13 +1583,12 @@ export default function FillingInchargePage() {
                       <td className="p-3 whitespace-nowrap">
                         <div className="mb-1">
                           <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold inline-block ${
-                              req.status === "RECEIVED_BY_FILLING_INCHARGE"
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold inline-block ${req.status === "RECEIVED_BY_FILLING_INCHARGE"
                                 ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
                                 : req.status === "DISPATCHED_BY_WAREHOUSE"
-                                ? "bg-blue-950 text-blue-400 border border-blue-800"
-                                : "bg-amber-950 text-amber-400 border border-amber-800"
-                            }`}
+                                  ? "bg-blue-950 text-blue-400 border border-blue-800"
+                                  : "bg-amber-950 text-amber-400 border border-amber-800"
+                              }`}
                           >
                             {req.status}
                           </span>
@@ -1426,17 +1597,21 @@ export default function FillingInchargePage() {
                       <td className="p-3 text-right space-y-2 whitespace-nowrap">
                         <button
                           onClick={() => {
-                            let fixedReq = req;
-                            if (!fixedReq.components || fixedReq.components.length === 0) {
-                              const q = fixedReq.pcs_requested || 1000;
-                              fixedReq.components = [
-                                { component_type: "bottle", pcs_requested: q, weight_10_pcs_grams: 122, theoretical_weight_kg: (q * 12.2) / 1000 },
-                                { component_type: "cap", pcs_requested: q, weight_10_pcs_grams: 45, theoretical_weight_kg: (q * 4.5) / 1000 },
-                                { component_type: "nozzle", pcs_requested: q, weight_10_pcs_grams: 15, theoretical_weight_kg: (q * 1.5) / 1000 },
-                                { component_type: "seal", pcs_requested: q, weight_10_pcs_grams: 5, theoretical_weight_kg: (q * 0.5) / 1000 },
-                              ];
-                            }
-                            setSelectedRequestForModal(fixedReq);
+                            const requestWithComponents = req.components?.length
+                              ? req
+                              : {
+                                ...req,
+                                components: (() => {
+                                  const q = req.pcs_requested || 1000;
+                                  return [
+                                    { component_type: "bottle", pcs_requested: q, weight_10_pcs_grams: 122, theoretical_weight_kg: (q * 12.2) / 1000 },
+                                    { component_type: "cap", pcs_requested: q, weight_10_pcs_grams: 45, theoretical_weight_kg: (q * 4.5) / 1000 },
+                                    { component_type: "nozzle", pcs_requested: q, weight_10_pcs_grams: 15, theoretical_weight_kg: (q * 1.5) / 1000 },
+                                    { component_type: "seal", pcs_requested: q, weight_10_pcs_grams: 5, theoretical_weight_kg: (q * 0.5) / 1000 },
+                                  ];
+                                })(),
+                              };
+                            setSelectedRequestForModal(requestWithComponents);
                           }}
                           className="px-3 py-1.5 bg-amber-600/30 hover:bg-amber-600 text-amber-300 hover:text-white rounded-lg text-xs font-bold border border-amber-500/30 transition block ml-auto w-full sm:w-auto text-center"
                         >
