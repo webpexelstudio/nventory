@@ -59,7 +59,8 @@ interface ProductBomOption {
 }
 
 interface MasterCartonOption {
-  carton_count: number;
+  carton_count: number | null;
+  carton_name: string | null;
 }
 
 interface MasterCartonProductSetting {
@@ -244,17 +245,19 @@ export default function MadamSalmaPage({ view = "reports" }: { view?: MadamSalma
     setCheckingAccess(true);
     void (async () => {
       try {
-        const { data, error: accessError } = await supabase
+        const { data: reportUsers, error: accessError } = await supabase
           .from("filling_production_users")
           .select("email, display_name, is_active")
-          .ilike("email", session.user.email ?? "")
-          .eq("is_active", true)
-          .maybeSingle();
+          .eq("is_active", true);
         if (!active) return;
         if (accessError) throw accessError;
-        setAuthorized(Boolean(data));
-        setReportUserName(data?.display_name ?? "");
-        if (!data) setError("This login is not authorized for hourly production reports. Ask an administrator to grant Madam Salma report access.");
+        const sessionEmail = session.user.email?.toLowerCase();
+        const reportUser = reportUsers?.find((user) =>
+          user.email.toLowerCase() === sessionEmail
+        );
+        setAuthorized(Boolean(reportUser));
+        setReportUserName(reportUser?.display_name ?? "");
+        if (!reportUser) setError("This login is not authorized for hourly production reports. Ask an administrator to grant Madam Salma report access.");
       } catch (accessError: unknown) {
         if (!active) return;
         console.error("Could not verify production report access:", accessError);
@@ -326,7 +329,7 @@ export default function MadamSalmaPage({ view = "reports" }: { view?: MadamSalma
       supabase.from("parties").select("id, name").order("name"),
       supabase.from("products").select("id, product_name, party_id").order("product_name"),
       supabase.from("product_bom").select("product_id, component_type, ml_capacity, capacity_unit, weight_10_pcs_grams"),
-      supabase.from("master_carton_options").select("carton_count").order("carton_count"),
+      supabase.from("master_carton_options").select("carton_count, carton_name").order("carton_count"),
       supabase.from("master_carton_product_settings").select("product_id, carton_count, carton_pcs"),
     ]);
     if (partyResult.error) throw partyResult.error;
@@ -505,13 +508,20 @@ export default function MadamSalmaPage({ view = "reports" }: { view?: MadamSalma
     return total + Number(manualDrafts[hour]?.cartons_completed ?? saved?.cartons_completed ?? 0);
   }, 0);
   const manualMasterCartonCounts = Array.from(new Set([
-    ...masterCartonOptions.map((option) => option.carton_count),
+    ...masterCartonOptions
+      .map((option) => option.carton_count)
+      .filter((count): count is number => Number.isSafeInteger(count) && count !== null && count > 0),
     ...(selectedManualCartonSetting ? [selectedManualCartonSetting.carton_count] : []),
     ...manualReports
       .filter((report) => report.party_id === manualPartyId && report.product_id === manualProductId)
       .map((report) => report.master_carton_count)
       .filter((count): count is number => count !== null),
   ])).sort((left, right) => left - right);
+  const manualNamedCartonOptions = Array.from(new Set(
+    masterCartonOptions
+      .map((option) => option.carton_name?.trim())
+      .filter((name): name is string => Boolean(name))
+  )).sort((left, right) => left.localeCompare(right));
   useEffect(() => {
     if (!manualPartyId || !manualProductId) return;
     const savedHeader = manualHeaders.find((header) =>
@@ -1158,10 +1168,38 @@ export default function MadamSalmaPage({ view = "reports" }: { view?: MadamSalma
                 className="mt-1 w-full rounded-lg border border-slate-700 bg-[#0b0f19] p-2.5 text-white disabled:opacity-50"
               >
                 <option value="">Select master carton</option>
-                {manualMasterCartonCounts.map((count) => (
-                  <option key={count} value={count}>{count} cartons</option>
-                ))}
+                {manualNamedCartonOptions.length > 0 && (
+                  <optgroup label="Admin carton names (warehouse types)">
+                    {manualNamedCartonOptions.map((name) => (
+                      <option key={name} value={`named:${name}`} disabled>
+                        {name} — warehouse-only option
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <optgroup label="Admin numeric carton counts (Filling)">
+                {manualMasterCartonCounts.map((count) => {
+                  const adminSetting = masterCartonSettings.find((setting) =>
+                    setting.product_id === manualProductId && setting.carton_count === count
+                  );
+                  return (
+                    <option key={count} value={count}>
+                      Carton #{count}{adminSetting?.carton_pcs ? ` — ${adminSetting.carton_pcs} pcs/carton` : ""}
+                    </option>
+                  );
+                })}
+                </optgroup>
               </select>
+              {manualNamedCartonOptions.length > 0 && (
+                <span className="mt-1 block text-slate-400">
+                  Admin carton names are shown above; named types are for warehouse stock. Choose a numeric Filling carton count to save this report.
+                </span>
+              )}
+              {selectedManualProduct && manualMasterCartonCounts.length === 0 && (
+                <span className="mt-1 block text-amber-300">
+                  No numeric Filling carton-count options found in Admin. Add one in Admin under Master Cartons.
+                </span>
+              )}
             </label>
             <label className="text-xs text-slate-300">
               Pcs in each master carton

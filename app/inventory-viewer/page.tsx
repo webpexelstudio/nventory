@@ -222,12 +222,46 @@ export default function WarehouseStaffPortal() {
       ? "—"
       : `${matchingBom.ml_capacity} ${matchingBom.capacity_unit || "ML"}`;
   };
+  const getProductComponentsLabel = (partyName?: string, productName?: string) => {
+    if (!partyName || !productName) return "N/A";
+    const components = productBomCapacities.filter((bom) => {
+      const bomProducts = Array.isArray(bom.products) ? bom.products : bom.products ? [bom.products] : [];
+      return bomProducts.some((product) => {
+        const productParties = Array.isArray(product.parties)
+          ? product.parties
+          : product.parties
+            ? [product.parties]
+            : [];
+        return product.product_name.toLowerCase() === productName.toLowerCase() &&
+          productParties.some((party) => party.name.toLowerCase() === partyName.toLowerCase());
+      });
+    });
+    if (components.length === 0) return "N/A";
+    return components.map((bom) => {
+      const capacity = bom.ml_capacity == null
+        ? ""
+        : ` (${bom.ml_capacity} ${bom.capacity_unit || "ML"})`;
+      return `${bom.component_type.toUpperCase()}${capacity}`;
+    }).join(", ");
+  };
   const getStockBalanceExportRows = () =>
     filteredStockBalances.map((stock) => ({
       "Party Name": stock.party_name || "General",
       "Product Name": stock.product_name || "General",
+      "Product Components": getProductComponentsLabel(stock.party_name, stock.product_name),
+      "Component Type": stock.component_type.toUpperCase(),
       "ML / GM": getStockBalanceCapacity(stock),
       "Qty": stock.quantity,
+    }));
+  const getStockLogExportRows = (logs: InventoryLog[]) =>
+    logs.map((log) => ({
+      "Party Name": log.party_name,
+      "Product Name": log.product_name || "N/A",
+      "Product Components": getProductComponentsLabel(log.party_name, log.product_name),
+      "Component": formatStockInComponent(log),
+      "Quantity": `${log.quantity} Pcs`,
+      "Remarks": log.remarks,
+      "Timestamp": new Date(log.created_at).toLocaleString(),
     }));
 
   const filteredStockInLogs = inOutLogs.filter((l) => {
@@ -363,10 +397,12 @@ export default function WarehouseStaffPortal() {
                     onClick={() =>
                       exportPDF(
                         "Warehouse Inventory Stock Balance",
-                        ["Party Name", "Product Name", "ML / GM", "Qty"],
+                        ["Party Name", "Product Name", "Product Components", "Component Type", "ML / GM", "Qty"],
                         filteredStockBalances.map((stock) => [
                           stock.party_name || "General",
                           stock.product_name || "General",
+                          getProductComponentsLabel(stock.party_name, stock.product_name),
+                          stock.component_type.toUpperCase(),
                           getStockBalanceCapacity(stock),
                           stock.quantity,
                         ])
@@ -470,7 +506,7 @@ export default function WarehouseStaffPortal() {
                 <h2 className="text-sm sm:text-md font-bold text-white">Stock IN History Log</h2>
                 <div className="flex gap-2 w-full sm:w-auto">
                   <button
-                    onClick={() => exportExcel(filteredStockInLogs, "Stock_IN_History")}
+                    onClick={() => exportExcel(getStockLogExportRows(filteredStockInLogs), "Stock_IN_History")}
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition text-center"
                   >
                     Excel
@@ -479,8 +515,8 @@ export default function WarehouseStaffPortal() {
                     onClick={() =>
                       exportPDF(
                         "Warehouse Stock IN Log",
-                        ["Party", "Product", "Component", "Quantity", "Remarks", "Timestamp"],
-                        filteredStockInLogs.map((l) => [l.party_name, l.product_name || "N/A", formatStockInComponent(l), `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
+                        ["Party", "Product", "Product Components", "Component", "Quantity", "Remarks", "Timestamp"],
+                        filteredStockInLogs.map((l) => [l.party_name, l.product_name || "N/A", getProductComponentsLabel(l.party_name, l.product_name), formatStockInComponent(l), `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -584,7 +620,7 @@ export default function WarehouseStaffPortal() {
                 <h2 className="text-sm sm:text-md font-bold text-white">Stock OUT History Log</h2>
                 <div className="flex gap-2 w-full sm:w-auto">
                   <button
-                    onClick={() => exportExcel(filteredStockOutLogs, "Stock_OUT_History")}
+                    onClick={() => exportExcel(getStockLogExportRows(filteredStockOutLogs), "Stock_OUT_History")}
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition text-center"
                   >
                     Excel
@@ -593,8 +629,8 @@ export default function WarehouseStaffPortal() {
                     onClick={() =>
                       exportPDF(
                         "Warehouse Stock OUT Log",
-                        ["Party", "Product", "Component", "Quantity", "Remarks", "Timestamp"],
-                        filteredStockOutLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type.toUpperCase(), `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
+                        ["Party", "Product", "Product Components", "Component", "Quantity", "Remarks", "Timestamp"],
+                        filteredStockOutLogs.map((l) => [l.party_name, l.product_name || "N/A", getProductComponentsLabel(l.party_name, l.product_name), l.component_type.toUpperCase(), `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
