@@ -1030,12 +1030,9 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
           <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1">Material Requisition & Weight Verification</h1>
         </div>
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-          <Link
-            href="/madam-salma"
-            className="w-full rounded-xl border border-cyan-700/40 bg-cyan-950/40 px-3 py-2 text-center text-xs font-bold text-cyan-200 hover:bg-cyan-900/50 sm:w-auto"
-          >
-            Madam Salma — Hourly Production
-          </Link>
+          <span className="w-full rounded-xl border border-slate-700 bg-slate-800/60 px-3 py-2 text-center text-xs font-bold text-slate-400 sm:w-auto">
+            Madam Salma — Hourly Production (Temporarily Disabled)
+          </span>
           <span className="w-full rounded-xl border border-slate-700 bg-slate-800/60 px-3 py-2 text-center text-xs font-bold text-slate-400 sm:w-auto">
             ↩ Returns / Damage — Coming Soon
           </span>

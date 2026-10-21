@@ -40,16 +40,10 @@ interface StockBalance {
 }
 
 interface ProductBomCapacity {
+  product_id: string;
   component_type: string;
   ml_capacity: number | null;
   capacity_unit: "ML" | "GM" | null;
-  products?: {
-    product_name: string;
-    parties?: { name: string } | { name: string }[] | null;
-  } | {
-    product_name: string;
-    parties?: { name: string } | { name: string }[] | null;
-  }[] | null;
 }
 
 export default function WarehouseStaffPortal() {
@@ -63,6 +57,7 @@ export default function WarehouseStaffPortal() {
   const [inOutLogs, setInOutLogs] = useState<InventoryLog[]>([]);
   const [stockBalances, setStockBalances] = useState<StockBalance[]>([]);
   const [productBomCapacities, setProductBomCapacities] = useState<ProductBomCapacity[]>([]);
+  const [warehouseDataError, setWarehouseDataError] = useState<string | null>(null);
 
   // Tab 1: Balance Filters
   const [balPartyId, setBalPartyId] = useState("");
@@ -85,29 +80,41 @@ export default function WarehouseStaffPortal() {
   }, []);
 
   const fetchWarehouseData = async () => {
+    setWarehouseDataError(null);
     try {
-      const { data: partyData } = await supabase.from("parties").select("*").order("name");
-      if (partyData) setPartiesList(partyData);
+      const { data: partyData, error: partyError } = await supabase.from("parties").select("*").order("name");
+      if (partyError) throw new Error(`Parties: ${partyError.message} (${partyError.code})`);
+      setPartiesList(partyData ?? []);
 
-      const { data: prodData } = await supabase.from("products").select("*").order("product_name");
-      if (prodData) setProductsList(prodData);
+      const { data: prodData, error: productsError } = await supabase.from("products").select("*").order("product_name");
+      if (productsError) throw new Error(`Products: ${productsError.message} (${productsError.code})`);
+      setProductsList(prodData ?? []);
 
-      const { data: logData } = await supabase.from("inventory_logs").select("*").order("created_at", { ascending: false });
-      if (logData) setInOutLogs(logData);
+      const { data: logData, error: logsError } = await supabase.from("inventory_logs").select("*").order("created_at", { ascending: false });
+      if (logsError) throw new Error(`Inventory logs: ${logsError.message} (${logsError.code})`);
+      setInOutLogs(logData ?? []);
 
-      const { data: stockData } = await supabase.from("inventory").select("*");
-      if (stockData) setStockBalances(stockData);
+      const { data: stockData, error: stockError } = await supabase.from("inventory").select("*");
+      if (stockError) throw new Error(`Inventory balances: ${stockError.message} (${stockError.code})`);
+      setStockBalances(stockData ?? []);
 
       const { data: bomData, error: bomError } = await supabase
         .from("product_bom")
-        .select("component_type, ml_capacity, capacity_unit, products(product_name, parties(name))");
-      if (bomError) throw bomError;
-      if (bomData) setProductBomCapacities(bomData);
-    } catch (e) {
-      console.error(e);
+        .select("product_id, component_type, ml_capacity, capacity_unit");
+      if (bomError) throw new Error(`Product BOM: ${bomError.message} (${bomError.code})`);
+      setProductBomCapacities(bomData ?? []);
+    } catch (error) {
+      setWarehouseDataError(error instanceof Error ? error.message : String(error));
     }
   };
-
+  const getProductId = (partyName?: string, productName?: string) => {
+    if (!partyName || !productName) return undefined;
+    const party = partiesList.find((item) => item.name.toLowerCase() === partyName.toLowerCase());
+    return productsList.find((item) =>
+      item.product_name.toLowerCase() === productName.toLowerCase() &&
+      (!party || item.party_id === party.id)
+    )?.id;
+  };
   const filteredProductsForBal = productsList.filter((p) => p.party_id === balPartyId);
   const filteredProductsForIn = productsList.filter((p) => p.party_id === inPartyId);
   const filteredProductsForOut = productsList.filter((p) => p.party_id === outPartyId);
@@ -118,23 +125,7 @@ export default function WarehouseStaffPortal() {
     const matchingBom = productBomCapacities.find(
       (bom) => {
         if (bom.component_type.trim().toLowerCase() !== componentType) return false;
-
-        const products = Array.isArray(bom.products)
-          ? bom.products
-          : bom.products
-            ? [bom.products]
-            : [];
-        return products.some((product) => {
-          const parties = Array.isArray(product.parties)
-            ? product.parties
-            : product.parties
-              ? [product.parties]
-              : [];
-          return (
-            product.product_name.toLowerCase() === log.product_name?.toLowerCase() &&
-            parties.some((party) => party.name.toLowerCase() === log.party_name.toLowerCase())
-          );
-        });
+        return bom.product_id === getProductId(log.party_name, log.product_name);
       }
     );
     if (!matchingBom?.ml_capacity || (matchingBom.capacity_unit || "ML") !== "ML") {
@@ -204,51 +195,17 @@ export default function WarehouseStaffPortal() {
   const getStockBalanceCapacity = (stock: StockBalance) => {
     const componentType = stock.component_type.trim().toLowerCase();
     const matchingBom = productBomCapacities.find((bom) => {
-      if (bom.component_type.trim().toLowerCase() !== componentType) return false;
-      const bomProducts = Array.isArray(bom.products) ? bom.products : bom.products ? [bom.products] : [];
-      return bomProducts.some((product) => {
-        const productParties = Array.isArray(product.parties)
-          ? product.parties
-          : product.parties
-            ? [product.parties]
-            : [];
-        return (
-          product.product_name.toLowerCase() === stock.product_name?.toLowerCase() &&
-          productParties.some((party) => party.name.toLowerCase() === stock.party_name.toLowerCase())
-        );
-      });
+      return bom.component_type.trim().toLowerCase() === componentType &&
+        bom.product_id === getProductId(stock.party_name, stock.product_name);
     });
     return matchingBom?.ml_capacity == null
       ? "—"
       : `${matchingBom.ml_capacity} ${matchingBom.capacity_unit || "ML"}`;
   };
-  const getProductComponentsLabel = (partyName?: string, productName?: string) => {
-    if (!partyName || !productName) return "N/A";
-    const components = productBomCapacities.filter((bom) => {
-      const bomProducts = Array.isArray(bom.products) ? bom.products : bom.products ? [bom.products] : [];
-      return bomProducts.some((product) => {
-        const productParties = Array.isArray(product.parties)
-          ? product.parties
-          : product.parties
-            ? [product.parties]
-            : [];
-        return product.product_name.toLowerCase() === productName.toLowerCase() &&
-          productParties.some((party) => party.name.toLowerCase() === partyName.toLowerCase());
-      });
-    });
-    if (components.length === 0) return "N/A";
-    return components.map((bom) => {
-      const capacity = bom.ml_capacity == null
-        ? ""
-        : ` (${bom.ml_capacity} ${bom.capacity_unit || "ML"})`;
-      return `${bom.component_type.toUpperCase()}${capacity}`;
-    }).join(", ");
-  };
   const getStockBalanceExportRows = () =>
     filteredStockBalances.map((stock) => ({
       "Party Name": stock.party_name || "General",
       "Product Name": stock.product_name || "General",
-      "Product Components": getProductComponentsLabel(stock.party_name, stock.product_name),
       "Component Type": stock.component_type.toUpperCase(),
       "ML / GM": getStockBalanceCapacity(stock),
       "Qty": stock.quantity,
@@ -257,7 +214,6 @@ export default function WarehouseStaffPortal() {
     logs.map((log) => ({
       "Party Name": log.party_name,
       "Product Name": log.product_name || "N/A",
-      "Product Components": getProductComponentsLabel(log.party_name, log.product_name),
       "Component": formatStockInComponent(log),
       "Quantity": `${log.quantity} Pcs`,
       "Remarks": log.remarks,
@@ -310,6 +266,11 @@ export default function WarehouseStaffPortal() {
       </div>
 
       <div className="max-w-7xl mx-auto space-y-4 sm:space-y-6">
+        {warehouseDataError && (
+          <p role="alert" className="rounded-lg border border-rose-700/50 bg-rose-950/40 p-3 text-sm text-rose-300 normal-case">
+            Inventory data could not be loaded: {warehouseDataError}
+          </p>
+        )}
         {/* Navigation Tabs */}
         <div className="flex gap-2 border-b border-slate-800 pb-3 overflow-x-auto scrollbar-thin">
           <button
@@ -397,11 +358,10 @@ export default function WarehouseStaffPortal() {
                     onClick={() =>
                       exportPDF(
                         "Warehouse Inventory Stock Balance",
-                        ["Party Name", "Product Name", "Product Components", "Component Type", "ML / GM", "Qty"],
+                        ["Party Name", "Product Name", "Component Type", "ML / GM", "Qty"],
                         filteredStockBalances.map((stock) => [
                           stock.party_name || "General",
                           stock.product_name || "General",
-                          getProductComponentsLabel(stock.party_name, stock.product_name),
                           stock.component_type.toUpperCase(),
                           getStockBalanceCapacity(stock),
                           stock.quantity,
@@ -515,8 +475,8 @@ export default function WarehouseStaffPortal() {
                     onClick={() =>
                       exportPDF(
                         "Warehouse Stock IN Log",
-                        ["Party", "Product", "Product Components", "Component", "Quantity", "Remarks", "Timestamp"],
-                        filteredStockInLogs.map((l) => [l.party_name, l.product_name || "N/A", getProductComponentsLabel(l.party_name, l.product_name), formatStockInComponent(l), `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
+                        ["Party", "Product", "Component", "Quantity", "Remarks", "Timestamp"],
+                        filteredStockInLogs.map((l) => [l.party_name, l.product_name || "N/A", formatStockInComponent(l), `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -629,8 +589,8 @@ export default function WarehouseStaffPortal() {
                     onClick={() =>
                       exportPDF(
                         "Warehouse Stock OUT Log",
-                        ["Party", "Product", "Product Components", "Component", "Quantity", "Remarks", "Timestamp"],
-                        filteredStockOutLogs.map((l) => [l.party_name, l.product_name || "N/A", getProductComponentsLabel(l.party_name, l.product_name), l.component_type.toUpperCase(), `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
+                        ["Party", "Product", "Component", "Quantity", "Remarks", "Timestamp"],
+                        filteredStockOutLogs.map((l) => [l.party_name, l.product_name || "N/A", l.component_type.toUpperCase(), `${l.quantity} Pcs`, l.remarks, new Date(l.created_at).toLocaleString()])
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"

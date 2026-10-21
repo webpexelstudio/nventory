@@ -165,9 +165,11 @@ export default function AdminPage() {
     | "client_access"
   >("setup");
   const [loading, setLoading] = useState(false);
+  const [adminDataError, setAdminDataError] = useState<string | null>(null);
 
   const [partiesList, setPartiesList] = useState<Party[]>([]);
   const [productsList, setProductsList] = useState<Product[]>([]);
+  const [productsError, setProductsError] = useState<string | null>(null);
   const [bomViewList, setBomViewList] = useState<ProductBomView[]>([]);
   const [fillingLogs, setFillingLogs] = useState<any[]>([]);
   const [warehouseLogs, setWarehouseLogs] = useState<any[]>([]);
@@ -519,19 +521,30 @@ export default function AdminPage() {
 
   fetchMasterData = async () => {
     setLoading(true);
+    setAdminDataError(null);
     try {
       const { data: partyData } = await supabase.from("parties").select("*").order("name");
       if (partyData) setPartiesList(partyData);
 
-      const { data: prodData } = await supabase
+      const { data: prodData, error: productsFetchError } = await supabase
         .from("products")
-        .select("*, parties(id, name, code)")
+        .select("id, product_name, party_id, created_at")
         .order("product_name");
-      if (prodData) setProductsList(prodData as any);
+      if (productsFetchError) {
+        setProductsList([]);
+        setProductsError(formatDatabaseError(productsFetchError));
+      } else {
+        const partiesById = new Map((partyData ?? []).map((party) => [party.id, party]));
+        setProductsList((prodData ?? []).map((product) => ({
+          ...product,
+          parties: partiesById.get(product.party_id),
+        })));
+        setProductsError(null);
+      }
 
       const { data: bomData } = await supabase
         .from("product_bom")
-        .select("*, products(id, product_name, parties(id, name, code))");
+        .select("*, products(id, product_name, parties!products_party_id_fkey(id, name, code))");
       if (bomData) {
         setBomViewList(bomData as any);
         const extractedTypes = Array.from(new Set(bomData.map((item: any) => item.component_type)));
@@ -584,12 +597,12 @@ export default function AdminPage() {
 
       let { data: cartonSettings, error: cartonSettingsError } = await supabase
         .from("master_carton_product_settings")
-        .select("product_id, carton_count, carton_pcs, products(product_name, parties(name))")
+        .select("product_id, carton_count, carton_pcs, products(product_name, parties!products_party_id_fkey(name))")
         .order("carton_count");
       if (isMissingCartonPcsColumnError(cartonSettingsError)) {
         const fallback = await supabase
           .from("master_carton_product_settings")
-          .select("product_id, carton_count, products(product_name, parties(name))")
+          .select("product_id, carton_count, products(product_name, parties!products_party_id_fkey(name))")
           .order("carton_count");
         cartonSettings = (fallback.data ?? []).map((setting) => ({ ...setting, carton_pcs: null }));
         cartonSettingsError = fallback.error;
@@ -621,8 +634,9 @@ export default function AdminPage() {
       }
       setMasterCartonOptionsError(null);
       setMasterCartonOptions(cartonOptions ?? []);
-    } catch (err: any) {
-      console.error(err);
+    } catch (err: unknown) {
+      const message = formatDatabaseError(err);
+      setAdminDataError(message);
     } finally {
       setLoading(false);
     }
@@ -1431,12 +1445,9 @@ export default function AdminPage() {
         >
           Transportation Rent & Payments
         </Link>
-        <Link
-          href="/madam-salma"
-          className="rounded-lg border border-cyan-700 bg-cyan-950/50 px-4 py-2 text-xs font-bold text-cyan-300 hover:bg-cyan-900/60"
-        >
-          Madam Salma — Hourly Production
-        </Link>
+        <span className="rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-2 text-xs font-bold text-slate-400">
+          Madam Salma — Hourly Production (Temporarily Disabled)
+        </span>
         <span className="rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-2 text-xs font-bold text-slate-400">
           Filling Returns & Damage — Coming Soon
         </span>
@@ -1455,6 +1466,19 @@ export default function AdminPage() {
       </div>
 
       <div className="max-w-7xl mx-auto space-y-6">
+        {adminDataError && (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-700/50 bg-rose-950/40 p-4 text-sm text-rose-300">
+            <span>Admin data could not be loaded: {adminDataError}</span>
+            <button
+              type="button"
+              onClick={() => void fetchMasterData()}
+              disabled={loading}
+              className="rounded-lg border border-rose-700/60 px-3 py-2 font-semibold hover:bg-rose-900/40 disabled:opacity-50"
+            >
+              {loading ? "Retrying..." : "Retry"}
+            </button>
+          </div>
+        )}
         {activeTab === "setup" && (
           <div className="space-y-8">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1943,7 +1967,22 @@ export default function AdminPage() {
 
         {activeTab === "products" && (
           <div className="bg-[#121827] border border-slate-800 rounded-xl p-6 shadow-lg space-y-4">
-            <h2 className="text-md font-semibold text-slate-200">Registered Products</h2>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-md font-semibold text-slate-200">Registered Products</h2>
+              <button
+                type="button"
+                onClick={() => void fetchMasterData()}
+                disabled={loading}
+                className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+              >
+                {loading ? "Loading..." : "Refresh"}
+              </button>
+            </div>
+            {productsError && (
+              <p role="alert" className="rounded-lg border border-rose-700/50 bg-rose-950/40 p-3 text-sm text-rose-300">
+                Products could not be loaded: {productsError}
+              </p>
+            )}
             <div className="overflow-x-auto max-h-[500px]">
               <table className="w-full text-left text-xs text-slate-300">
                 <thead className="bg-[#0b0f19] text-slate-400 uppercase sticky top-0">
@@ -1952,7 +1991,7 @@ export default function AdminPage() {
                 <tbody className="divide-y divide-slate-800">
                   {filteredProducts.map((prod) => (
                     <tr key={prod.id} className="hover:bg-slate-800/50">
-                      <td className="p-3 font-bold text-emerald-400">{prod.parties?.name}</td>
+                      <td className="p-3 font-bold text-emerald-400">{prod.parties?.name ?? "Party not found"}</td>
                       <td className="p-3 font-bold text-slate-200">{prod.product_name}</td>
                       <td className="p-3 text-right">
                         <button onClick={() => setEditingProduct(prod)} className="text-blue-400 mr-3 px-2 py-1 bg-blue-900/30 rounded">Edit</button>
@@ -1960,6 +1999,13 @@ export default function AdminPage() {
                       </td>
                     </tr>
                   ))}
+                  {filteredProducts.length === 0 && !productsError && (
+                    <tr>
+                      <td colSpan={3} className="p-6 text-center text-slate-500">
+                        No products have been registered yet.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>

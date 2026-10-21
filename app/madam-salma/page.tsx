@@ -1,5 +1,5 @@
-import MadamSalmaPage from "@/components/MadamSalmaPage";
+import MadamSalmaDisabledNotice from "@/components/MadamSalmaDisabledNotice";
 
 export default function Page() {
-  return <MadamSalmaPage view="reports" />;
+  return <MadamSalmaDisabledNotice />;
 }
