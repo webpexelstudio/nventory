@@ -137,10 +137,35 @@ interface StockInComponentRow {
 const getErrorMessage = (error: unknown) => {
   if (error instanceof Error) return error.message;
   if (error && typeof error === "object" && "message" in error) {
-    const databaseError = error as { message?: string; details?: string; hint?: string };
-    return [databaseError.message, databaseError.details, databaseError.hint].filter(Boolean).join(" ");
+    const databaseError = error as { message?: string; code?: string; details?: string; hint?: string };
+    return [
+      databaseError.message,
+      databaseError.code ? `(${databaseError.code})` : "",
+      databaseError.details,
+      databaseError.hint,
+    ].filter(Boolean).join(" ");
   }
   return String(error);
+};
+
+const fetchSavedComponentTypes = async () => {
+  const { data, error } = await supabase
+    .from("component_type_options")
+    .select("component_type")
+    .order("component_type");
+
+  if (error && error.message.toLowerCase().includes("component_type")) {
+    const fallback = await supabase.from("component_type_options").select("name").order("name");
+    if (fallback.error) throw fallback.error;
+    return (fallback.data ?? [])
+      .map((option) => option.name?.trim().toLowerCase() ?? "")
+      .filter(Boolean);
+  }
+
+  if (error) throw error;
+  return (data ?? [])
+    .map((option) => option.component_type?.trim().toLowerCase() ?? "")
+    .filter(Boolean);
 };
 
 const getQuantityUnit = (componentType: string) =>
@@ -160,6 +185,7 @@ const ALL_PRODUCTS_OPTION = "__all_products__";
 export default function WarehousePortalPage() {
   const [activeTab, setActiveTab] = useState<"requests" | "returns" | "stock_in" | "master_cartons" | "stock_out" | "balance">("requests");
   const [loading, setLoading] = useState(false);
+  const [warehouseDataError, setWarehouseDataError] = useState<string | null>(null);
 
   // Master Data from DB
   const [partiesList, setPartiesList] = useState<Party[]>([]);
@@ -255,6 +281,7 @@ export default function WarehousePortalPage() {
 
   const fetchWarehouseAndMasterData = async () => {
     setLoading(true);
+    setWarehouseDataError(null);
     try {
       const { data: partyData } = await supabase.from("parties").select("*").order("name");
       if (partyData) setPartiesList(partyData);
@@ -301,11 +328,16 @@ export default function WarehousePortalPage() {
       // Fetch dynamic component types from product_bom table
       const { data: bomTypesData, error: bomTypesError } = await supabase
         .from("product_bom")
-        .select("component_type, ml_capacity, capacity_unit, products(product_name, parties(name))");
+        .select("component_type, ml_capacity, capacity_unit, products(product_name, parties!products_party_id_fkey(name))");
       if (bomTypesError) throw bomTypesError;
       if (bomTypesData) setProductBomCapacities(bomTypesData);
+      const savedComponentTypes = await fetchSavedComponentTypes();
       const uniqueTypes = Array.from(
-        new Set([...(bomTypesData ?? []).map((item: any) => item.component_type).filter(Boolean), "master_carton"])
+        new Set([
+          ...savedComponentTypes,
+          ...(bomTypesData ?? []).map((item: any) => item.component_type).filter(Boolean),
+          "master_carton",
+        ])
       );
       setDynamicComponentTypes(uniqueTypes);
       const stockInTypes = uniqueTypes.filter((type) => type.toLowerCase() !== "master_carton");
@@ -320,7 +352,7 @@ export default function WarehousePortalPage() {
         setOutComponentType(uniqueTypes[0]);
       }
     } catch (e) {
-      console.error(e);
+      setWarehouseDataError(getErrorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -1094,6 +1126,19 @@ export default function WarehousePortalPage() {
       </div>
 
       <div className="max-w-7xl mx-auto space-y-4 sm:space-y-6">
+        {warehouseDataError && (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-700/50 bg-rose-950/40 p-4 text-sm text-rose-300 normal-case">
+            <span>Warehouse data could not be loaded: {warehouseDataError}</span>
+            <button
+              type="button"
+              onClick={() => void fetchWarehouseAndMasterData()}
+              disabled={loading}
+              className="rounded-lg border border-rose-700/60 px-3 py-2 font-semibold hover:bg-rose-900/40 disabled:opacity-50"
+            >
+              {loading ? "Retrying..." : "Retry"}
+            </button>
+          </div>
+        )}
         <div className="flex gap-2 border-b border-slate-800 pb-3 overflow-x-auto scrollbar-thin">
           <button
             onClick={() => setActiveTab("requests")}
