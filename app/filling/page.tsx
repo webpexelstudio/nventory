@@ -7,13 +7,6 @@ import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const COMPANY_DETAILS = {
-  name: "WEB PEXEL STUDIO / NIGEHBAN HEALTHCARE",
-  address: "Gulistan-e-Johar, Karachi, Pakistan",
-  contact: "Ph: +92 315 0274582 | Email: rizwanmadni517@gmail.com",
-  logoPath: "/logo.png",
-};
-
 interface Party {
   id: string;
   name: string;
@@ -881,50 +874,45 @@ export default function FillingInchargePage() {
   };
 
   const exportExcel = (data: Record<string, unknown>[], fileName: string) => {
-    const worksheet = XLSX.utils.json_to_sheet(data);
+    const normalizedPartyKey = Object.keys(data[0] ?? {}).find((key) =>
+      ["party", "party name", "party_name"].includes(key.toLowerCase().replace(/_/g, " ").trim())
+    );
+    const partyNames = Array.from(new Set(
+      data.map((row) => String(normalizedPartyKey ? row[normalizedPartyKey] ?? "" : "").trim()).filter(Boolean)
+    ));
+    const partyHeading = partyNames.length === 1 ? partyNames[0] : partyNames.length > 1 ? "Multiple Parties" : "All Parties";
+    const worksheet = XLSX.utils.aoa_to_sheet([[partyHeading], [fileName]]);
+    XLSX.utils.sheet_add_json(worksheet, data, { origin: "A4" });
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Report");
     XLSX.writeFile(workbook, `${fileName}_${new Date().toISOString().split("T")[0]}.xlsx`);
   };
 
-  const exportPDFWithLogo = async (
+  const exportPDF = (
     title: string,
     headers: string[],
     body: (string | number)[][],
     orientation: "portrait" | "landscape" = "portrait"
   ) => {
     const doc = new jsPDF({ orientation });
-    const loadImage = (url: string): Promise<HTMLImageElement> => {
-      return new Promise((resolve, reject) => {
-        const img = new Image();
-        img.src = url;
-        img.onload = () => resolve(img);
-        img.onerror = () => reject("Logo image not found");
-      });
-    };
-
-    try {
-      const logoImg = await loadImage(COMPANY_DETAILS.logoPath);
-      doc.addImage(logoImg, "PNG", 14, 10, 25, 25);
-    } catch {
-      console.warn("Logo load failed.");
-    }
-
+    const partyColumn = headers.findIndex((header) =>
+      ["party", "party name"].includes(header.toLowerCase().trim())
+    );
+    const partyNames = partyColumn < 0 ? [] : Array.from(new Set(
+      body.map((row) => String(row[partyColumn] ?? "").trim()).filter(Boolean)
+    ));
+    const partyHeading = partyNames.length === 1 ? partyNames[0] : partyNames.length > 1 ? "Multiple Parties" : "All Parties";
+    const pageWidth = doc.internal.pageSize.getWidth();
     doc.setFontSize(14);
     doc.setFont("helvetica", "bold");
-    doc.text(COMPANY_DETAILS.name, 45, 16);
-    doc.setFontSize(9);
-    doc.setFont("helvetica", "normal");
-    doc.text(COMPANY_DETAILS.address, 45, 22);
-    doc.text(COMPANY_DETAILS.contact, 45, 27);
-    doc.setLineWidth(0.5);
-    doc.line(14, 38, 196, 38);
+    doc.text(partyHeading, 14, 16);
     doc.setFontSize(12);
-    doc.setFont("helvetica", "bold");
-    doc.text(title.toUpperCase(), 14, 46);
+    doc.text(title.toUpperCase(), 14, 24);
+    doc.setLineWidth(0.5);
+    doc.line(14, 29, pageWidth - 14, 29);
 
     autoTable(doc, {
-      startY: 52,
+      startY: 34,
       head: [headers],
       body: body,
       theme: "grid",
@@ -1523,7 +1511,7 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
               </button>
               <button
                 onClick={() => {
-                  exportPDFWithLogo(
+                  exportPDF(
                     "Filling Incharge Material Requisition Log",
                     ["Batch No", "Mfg/Exp", "Retail Price", "Party", "Product", "Components", "Pack Size", "Room", "Pcs", "Carton Number", "Pcs/Carton", "Total Cartons Required", "Master Cartons Warehouse"],
                     filteredRequestsList.map((f) => [
