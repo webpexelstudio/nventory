@@ -2,6 +2,12 @@
 
 import React, { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
+import {
+  FillingMaterialReturn,
+  getFillingMaterialReturnStatusLabel,
+  getFillingMaterialReturnsSetupMessage,
+  isFillingMaterialReturnsTableMissing,
+} from "@/lib/filling-material-returns";
 
 interface ClientSession {
   party_id: string;
@@ -35,11 +41,13 @@ export default function ClientPortalPage() {
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<"in" | "out" | "balance">("in");
+  const [activeTab, setActiveTab] = useState<"in" | "out" | "balance" | "returns">("in");
   const [loading, setLoading] = useState(false);
   const [inLogs, setInLogs] = useState<InventoryLog[]>([]);
   const [outLogs, setOutLogs] = useState<InventoryLog[]>([]);
   const [balances, setBalances] = useState<StockBalance[]>([]);
+  const [materialReturns, setMaterialReturns] = useState<FillingMaterialReturn[]>([]);
+  const [materialReturnsError, setMaterialReturnsError] = useState("");
 
   const [productOptions, setProductOptions] = useState<string[]>([]);
 
@@ -185,6 +193,24 @@ export default function ClientPortalPage() {
 
       if (outData) setOutLogs(outData);
 
+      const { data: returnData, error: returnError } = await supabase
+        .from("filling_material_returns")
+        .select("*")
+        .eq("party_id", partyId)
+        .order("created_at", { ascending: false });
+      if (returnError) {
+        console.error("Could not load client return status:", returnError);
+        setMaterialReturns([]);
+        setMaterialReturnsError(
+          isFillingMaterialReturnsTableMissing(returnError)
+            ? getFillingMaterialReturnsSetupMessage()
+            : returnError.message
+        );
+      } else {
+        setMaterialReturns((returnData ?? []) as FillingMaterialReturn[]);
+        setMaterialReturnsError("");
+      }
+
       const { data: balData } = await supabase
         .from("inventory")
         .select("*")
@@ -210,6 +236,9 @@ export default function ClientPortalPage() {
       setProductOptions(uniqueProducts);
     } catch (err) {
       console.error(err);
+      setMaterialReturnsError(
+        err instanceof Error ? err.message : "Could not load return and damage status."
+      );
     } finally {
       setLoading(false);
     }
@@ -344,6 +373,9 @@ export default function ClientPortalPage() {
           >
             🏢 Stock Balance
           </button>
+          <span className="px-4 py-2 rounded-xl text-xs font-bold text-slate-500">
+            ↩ Returns / Damage — Coming Soon
+          </span>
         </div>
 
         {activeTab === "in" && (
@@ -451,8 +483,65 @@ export default function ClientPortalPage() {
             {activeTab === "in" && "WAREHOUSE IN RECORDS"}
             {activeTab === "out" && "WAREHOUSE OUT RECORDS"}
             {activeTab === "balance" && "CURRENT STOCK BALANCE"}
+            {activeTab === "returns" && "RETURNS / DAMAGE STATUS"}
           </h2>
 
+          {activeTab === "returns" ? (
+            <div className="overflow-x-auto">
+              {materialReturnsError ? (
+                <p role="alert" className="rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-300">
+                  Could not load return status: {materialReturnsError}
+                </p>
+              ) : (
+                <table className="w-full min-w-[700px] text-left text-xs text-slate-300">
+                  <thead className="bg-[#0b0f19] uppercase text-slate-400">
+                    <tr>
+                      <th className="p-3">Batch</th>
+                      <th className="p-3">Product / Type</th>
+                      <th className="p-3">Destination</th>
+                      <th className="p-3">Components / Qty</th>
+                      <th className="p-3">Party return date</th>
+                      <th className="p-3">Status</th>
+                      <th className="p-3">Warehouse received</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {materialReturns.map((record) => (
+                      <tr key={record.id}>
+                        <td className="p-3 font-mono text-purple-300">{record.batch_no || "—"}</td>
+                        <td className="p-3">
+                          <div className="font-bold text-white">{record.product_name}</div>
+                          <div className={record.kind === "DAMAGED" ? "text-rose-300" : "text-cyan-300"}>
+                            {record.kind === "DAMAGED" ? "DAMAGED" : "RETURN"}
+                          </div>
+                        </td>
+                        <td className="p-3">{record.destination === "PARTY" ? "Party" : "Warehouse"}</td>
+                        <td className="p-3">
+                          {record.components.map((component, index) => (
+                            <div key={`${component.component_type}-${index}`}>
+                              {component.component_type}: {component.quantity} pcs
+                            </div>
+                          ))}
+                        </td>
+                        <td className="p-3">
+                          {record.party_return_date
+                            ? new Date(`${record.party_return_date}T00:00:00`).toLocaleDateString()
+                            : "—"}
+                        </td>
+                        <td className="p-3">{getFillingMaterialReturnStatusLabel(record)}</td>
+                        <td className="p-3">{record.received_at
+                          ? new Date(record.received_at).toLocaleString()
+                          : record.destination === "PARTY" ? "Not for warehouse" : "Pending"}</td>
+                      </tr>
+                    ))}
+                    {materialReturns.length === 0 && (
+                      <tr><td colSpan={7} className="p-6 text-center text-slate-500">No return or damage records for this party.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs text-slate-300">
               <thead className="bg-[#0b0f19] text-slate-400 uppercase font-semibold">
@@ -522,6 +611,7 @@ export default function ClientPortalPage() {
               </tbody>
             </table>
           </div>
+          )}
         </div>
       </div>
     </div>

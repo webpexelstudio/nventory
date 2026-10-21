@@ -5,6 +5,12 @@ import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import {
+  FillingMaterialReturn,
+  getFillingMaterialReturnStatusLabel,
+  getFillingMaterialReturnsSetupMessage,
+  isFillingMaterialReturnsTableMissing,
+} from "@/lib/filling-material-returns";
 
 const COMPANY_DETAILS = {
   name: "WEB PEXEL STUDIO / NIGEHBAN HEALTHCARE",
@@ -69,6 +75,13 @@ const getRequiredMasterCartonCount = (request: FillingRequest) =>
   (request.master_carton_pcs && request.master_carton_pcs > 0 && request.pcs_requested > 0
     ? Math.ceil(request.pcs_requested / request.master_carton_pcs)
     : null);
+
+const getRequestComponentsLabel = (request: FillingRequest) =>
+  request.components?.length
+    ? request.components
+      .map((component) => `${component.component_type}: ${component.pcs_requested.toLocaleString()} pcs`)
+      .join("\n")
+    : "N/A";
 
 const omitAllocationSourceFields = (request: FillingRequest) => {
   const visibleRequest = { ...request };
@@ -152,7 +165,7 @@ const ALL_PARTIES_OPTION = "__all_parties__";
 const ALL_PRODUCTS_OPTION = "__all_products__";
 
 export default function WarehousePortalPage() {
-  const [activeTab, setActiveTab] = useState<"requests" | "stock_in" | "master_cartons" | "stock_out" | "balance">("requests");
+  const [activeTab, setActiveTab] = useState<"requests" | "returns" | "stock_in" | "master_cartons" | "stock_out" | "balance">("requests");
   const [loading, setLoading] = useState(false);
 
   // Master Data from DB
@@ -163,6 +176,8 @@ export default function WarehousePortalPage() {
 
   // Warehouse Data
   const [requestsList, setRequestsList] = useState<FillingRequest[]>([]);
+  const [materialReturns, setMaterialReturns] = useState<FillingMaterialReturn[]>([]);
+  const [materialReturnsError, setMaterialReturnsError] = useState("");
   const [inOutLogs, setInOutLogs] = useState<InventoryLog[]>([]);
   const [stockBalances, setStockBalances] = useState<StockBalance[]>([]);
   const [productBomCapacities, setProductBomCapacities] = useState<ProductBomCapacity[]>([]);
@@ -256,6 +271,22 @@ export default function WarehousePortalPage() {
 
       const { data: reqData } = await supabase.from("filling_requests").select("*");
       if (reqData) setRequestsList(reqData as FillingRequest[]);
+
+      const { data: materialReturnData, error: materialReturnError } = await supabase
+        .from("filling_material_returns")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (materialReturnError) {
+        setMaterialReturnsError(
+          isFillingMaterialReturnsTableMissing(materialReturnError)
+            ? getFillingMaterialReturnsSetupMessage()
+            : materialReturnError.message
+        );
+        setMaterialReturns([]);
+      } else {
+        setMaterialReturnsError("");
+        setMaterialReturns((materialReturnData ?? []) as FillingMaterialReturn[]);
+      }
 
       const { data: logData } = await supabase.from("inventory_logs").select("*").order("created_at", { ascending: false });
       if (logData) setInOutLogs(logData);
@@ -419,8 +450,13 @@ export default function WarehousePortalPage() {
     XLSX.writeFile(workbook, `${fileName}_${new Date().toISOString().split("T")[0]}.xlsx`);
   };
 
-  const exportPDFWithLogo = async (title: string, headers: string[], body: any[][]) => {
-    const doc = new jsPDF();
+  const exportPDFWithLogo = async (
+    title: string,
+    headers: string[],
+    body: any[][],
+    orientation: "portrait" | "landscape" = "portrait"
+  ) => {
+    const doc = new jsPDF({ orientation });
     const loadImage = (url: string): Promise<HTMLImageElement> => {
       return new Promise((resolve, reject) => {
         const img = new Image();
@@ -538,6 +574,23 @@ export default function WarehousePortalPage() {
       fetchWarehouseAndMasterData();
     } catch (err: any) {
       alert("Dispatch Error: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleReceiveMaterialReturn = async (returnId: string) => {
+    if (!confirm("Confirm warehouse receipt? Usable returns will be added to inventory; damaged items will not.")) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase.rpc("receive_filling_material_return", {
+        p_return_id: returnId,
+      });
+      if (error) throw error;
+      await fetchWarehouseAndMasterData();
+    } catch (error: unknown) {
+      alert("Could not confirm warehouse receipt: " + getErrorMessage(error));
     } finally {
       setLoading(false);
     }
@@ -1061,6 +1114,9 @@ export default function WarehousePortalPage() {
           >
             📦 Filling Requests ({requestsList.filter(r => r.status === "PENDING_WAREHOUSE").length})
           </button>
+          <span className="px-3 sm:px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap shrink-0 text-slate-500">
+            ↩ Returns / Damage — Coming Soon
+          </span>
           <button
             onClick={() => setActiveTab("stock_in")}
             className={`px-3 sm:px-4 py-2 rounded-xl text-xs font-bold transition whitespace-nowrap shrink-0 ${activeTab === "stock_in" ? "bg-blue-600 text-white shadow-lg" : "bg-[#121827] text-slate-400 hover:text-white"
@@ -1158,6 +1214,7 @@ export default function WarehousePortalPage() {
                         return {
                           ...exportRequest,
                           room: request.room_number ? `Room ${request.room_number}` : "N/A",
+                          components: getRequestComponentsLabel(request),
                         };
                       }),
                       "Filling_Requests_Dispatch"
@@ -1170,13 +1227,14 @@ export default function WarehousePortalPage() {
                     onClick={() =>
                       exportPDFWithLogo(
                         "Warehouse Filling Requests Log",
-                        ["Batch No", "Mfg/Exp", "Price", "Party", "Product", "Pack Size", "Room", "Pcs", "Carton Number", "Pcs/Carton", "Total Cartons Required", "Target Wt", "Scale Wt", "Dates", "Status"],
+                        ["Batch No", "Mfg/Exp", "Price", "Party", "Product", "Components", "Pack Size", "Room", "Pcs", "Carton Number", "Pcs/Carton", "Total Cartons Required", "Target Wt", "Scale Wt", "Dates", "Status"],
                         filteredRequests.map((f) => [
                           f.batch_no || f.req_code || "N/A",
                           `Mfg: ${f.mfg_date}\nExp: ${f.exp_date}`,
                           `Rs. ${f.retail_price || 0}`,
                           f.party_name,
                           f.product_name,
+                          getRequestComponentsLabel(f),
                           f.pack_size ? `${f.pack_size} ${f.pack_unit || "ML"}` : "N/A",
                           f.room_number ? `Room ${f.room_number}` : "N/A",
                           f.pcs_requested,
@@ -1187,7 +1245,8 @@ export default function WarehousePortalPage() {
                           f.actual_dispatched_weight_kg ? `${f.actual_dispatched_weight_kg.toFixed(2)} Kg` : "Pending",
                           `Req: ${f.required_date || "-"}\nSent: ${f.requested_at ? new Date(f.requested_at).toLocaleDateString() : "-"}\nDisp: ${f.dispatched_at || "-"}\nRecv: ${f.received_at || "-"}`,
                           f.status,
-                        ])
+                        ]),
+                        "landscape"
                       )
                     }
                     className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"
@@ -1302,6 +1361,82 @@ export default function WarehousePortalPage() {
         )}
 
         {/* 100% DYNAMIC COMPONENT TYPE DROPDOWN IN STOCK IN PORTAL */}
+        {activeTab === "returns" && (
+          <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-[#121827] p-4 sm:p-6">
+            <h2 className="mb-4 text-sm font-bold text-white">Filling Returns & Damaged Items</h2>
+            {materialReturnsError && (
+              <p role="alert" className="mb-4 rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-300">
+                Could not load return records: {materialReturnsError}. Apply the filling returns migration and refresh.
+              </p>
+            )}
+            <table className="w-full min-w-[850px] text-left text-xs text-slate-300">
+              <thead className="bg-[#0b0f19] uppercase text-slate-400">
+                <tr>
+                  <th className="p-3">Type / Batch</th>
+                  <th className="p-3">Party / Product</th>
+                  <th className="p-3">Destination</th>
+                  <th className="p-3">Components / Qty</th>
+                  <th className="p-3">Return to party date</th>
+                  <th className="p-3">Status / Received</th>
+                  <th className="p-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {materialReturns.map((record) => (
+                  <tr key={record.id}>
+                    <td className="p-3">
+                      <div className={`font-bold ${record.kind === "DAMAGED" ? "text-rose-300" : "text-cyan-300"}`}>
+                        {record.kind === "DAMAGED" ? "DAMAGED" : "RETURN"}
+                      </div>
+                      <div className="mt-1 text-slate-400">{record.batch_no || "No batch"}</div>
+                    </td>
+                    <td className="p-3">
+                      <div className="font-semibold text-white">{record.party_name}</div>
+                      <div className="text-emerald-300">{record.product_name}</div>
+                    </td>
+                    <td className="p-3">{record.destination === "PARTY" ? "Party" : "Warehouse"}</td>
+                    <td className="p-3">
+                      {record.components.map((component, index) => (
+                        <div key={`${component.component_type}-${index}`}>
+                          {component.component_type}: {component.quantity} pcs
+                        </div>
+                      ))}
+                    </td>
+                    <td className="p-3">
+                      {record.party_return_date
+                        ? new Date(`${record.party_return_date}T00:00:00`).toLocaleDateString()
+                        : "—"}
+                    </td>
+                    <td className="p-3">
+                      <div>{getFillingMaterialReturnStatusLabel(record)}</div>
+                      <div className="mt-1 text-[10px] text-slate-500">
+                        Received: {record.received_at
+                          ? new Date(record.received_at).toLocaleString()
+                          : record.destination === "PARTY" ? "Not for warehouse" : "Pending"}
+                      </div>
+                    </td>
+                    <td className="p-3 text-right">
+                      {record.destination === "WAREHOUSE" && record.status === "PENDING_WAREHOUSE" && (
+                        <button
+                          type="button"
+                          disabled={loading}
+                          onClick={() => void handleReceiveMaterialReturn(record.id)}
+                          className="rounded-lg bg-emerald-600 px-3 py-2 font-bold text-white hover:bg-emerald-500 disabled:opacity-50"
+                        >
+                          ✔ Confirm Received
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {materialReturns.length === 0 && (
+                  <tr><td colSpan={7} className="p-6 text-center text-slate-500">No return or damage records.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+
         {activeTab === "stock_in" && (
           <div className="space-y-6">
             <div className="bg-[#121827] border border-slate-800 p-4 sm:p-6 rounded-2xl shadow-xl space-y-6">

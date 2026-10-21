@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
@@ -194,6 +195,13 @@ const getRequiredMasterCartonCount = (request: FillingRequest) =>
   (request.master_carton_pcs && request.master_carton_pcs > 0 && request.pcs_requested > 0
     ? Math.ceil(request.pcs_requested / request.master_carton_pcs)
     : null);
+
+const getRequestComponentsLabel = (request: FillingRequest) =>
+  request.components?.length
+    ? request.components
+      .map((component) => `${component.component_type}: ${component.pcs_requested.toLocaleString()} pcs`)
+      .join("\n")
+    : "N/A";
 
 const omitAllocationSourceFields = (request: FillingRequest) => {
   const visibleRequest = { ...request };
@@ -879,8 +887,13 @@ export default function FillingInchargePage() {
     XLSX.writeFile(workbook, `${fileName}_${new Date().toISOString().split("T")[0]}.xlsx`);
   };
 
-  const exportPDFWithLogo = async (title: string, headers: string[], body: (string | number)[][]) => {
-    const doc = new jsPDF();
+  const exportPDFWithLogo = async (
+    title: string,
+    headers: string[],
+    body: (string | number)[][],
+    orientation: "portrait" | "landscape" = "portrait"
+  ) => {
+    const doc = new jsPDF({ orientation });
     const loadImage = (url: string): Promise<HTMLImageElement> => {
       return new Promise((resolve, reject) => {
         const img = new Image();
@@ -1028,15 +1041,26 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
           </span>
           <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1">Material Requisition & Weight Verification</h1>
         </div>
-        <button
-          onClick={() => {
-            setLoading(true);
-            void fetchLiveSupabaseData();
-          }}
-          className="w-full sm:w-auto px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold border border-slate-700 text-center"
-        >
-          🔄 Refresh Live Supabase Data
-        </button>
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+          <Link
+            href="/madam-salma"
+            className="w-full rounded-xl border border-cyan-700/40 bg-cyan-950/40 px-3 py-2 text-center text-xs font-bold text-cyan-200 hover:bg-cyan-900/50 sm:w-auto"
+          >
+            Madam Salma — Hourly Production
+          </Link>
+          <span className="w-full rounded-xl border border-slate-700 bg-slate-800/60 px-3 py-2 text-center text-xs font-bold text-slate-400 sm:w-auto">
+            ↩ Returns / Damage — Coming Soon
+          </span>
+          <button
+            onClick={() => {
+              setLoading(true);
+              void fetchLiveSupabaseData();
+            }}
+            className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-center text-xs font-bold text-slate-200 hover:bg-slate-700 sm:w-auto"
+          >
+            🔄 Refresh Live Supabase Data
+          </button>
+        </div>
       </div>
 
       <div className="max-w-7xl mx-auto space-y-6">
@@ -1488,6 +1512,7 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
                     return {
                       ...exportRequest,
                       room: request.room_number ? `Room ${request.room_number}` : "N/A",
+                      components: getRequestComponentsLabel(request),
                     };
                   }),
                   "Filling_Requests_Log"
@@ -1500,13 +1525,14 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
                 onClick={() => {
                   exportPDFWithLogo(
                     "Filling Incharge Material Requisition Log",
-                    ["Batch No", "Mfg/Exp", "Retail Price", "Party", "Product", "Pack Size", "Room", "Pcs", "Carton Number", "Pcs/Carton", "Total Cartons Required", "Master Cartons Warehouse"],
+                    ["Batch No", "Mfg/Exp", "Retail Price", "Party", "Product", "Components", "Pack Size", "Room", "Pcs", "Carton Number", "Pcs/Carton", "Total Cartons Required", "Master Cartons Warehouse"],
                     filteredRequestsList.map((f) => [
                       f.batch_no || f.req_code || "N/A",
                       `Mfg: ${f.mfg_date || "N/A"}\nExp: ${f.exp_date || "N/A"}`,
                       `Rs. ${f.retail_price || 0}`,
                       f.party_name,
                       f.product_name,
+                      getRequestComponentsLabel(f),
                       f.pack_size ? `${f.pack_size} ${f.pack_unit || "ML"}` : "N/A",
                       f.room_number ? `Room ${f.room_number}` : "N/A",
                       f.pcs_requested,
@@ -1514,7 +1540,8 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
                       f.master_carton_pcs ?? "N/A",
                       getRequiredMasterCartonCount(f) ?? "N/A",
                       f.master_carton_warehouse || "N/A",
-                    ])
+                    ]),
+                    "landscape"
                   );
                 }}
                 className="flex-1 sm:flex-none px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg transition text-center"

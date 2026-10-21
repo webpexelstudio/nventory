@@ -1431,6 +1431,15 @@ export default function AdminPage() {
         >
           Transportation Rent & Payments
         </Link>
+        <Link
+          href="/madam-salma"
+          className="rounded-lg border border-cyan-700 bg-cyan-950/50 px-4 py-2 text-xs font-bold text-cyan-300 hover:bg-cyan-900/60"
+        >
+          Madam Salma — Hourly Production
+        </Link>
+        <span className="rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-2 text-xs font-bold text-slate-400">
+          Filling Returns & Damage — Coming Soon
+        </span>
 
         <div className="flex flex-wrap gap-1.5 bg-[#121827] p-1.5 rounded-xl border border-slate-800 text-xs">
           <button onClick={() => setActiveTab("setup")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "setup" ? "bg-purple-700 text-white" : "text-slate-400 hover:text-white"}`}>+ Add Master</button>
