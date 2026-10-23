@@ -117,6 +117,7 @@ interface MasterCartonOption {
 }
 
 interface ProductBomCapacity {
+  product_id: string;
   component_type: string;
   ml_capacity: number | null;
   capacity_unit: "ML" | "GM" | null;
@@ -130,6 +131,11 @@ interface ProductBomCapacity {
 }
 
 interface StockInComponentRow {
+  component_type: string;
+  quantity: string;
+}
+
+interface StockOutComponentRow {
   component_type: string;
   quantity: string;
 }
@@ -220,7 +226,7 @@ export default function WarehousePortalPage() {
   const [selectedPartyId, setSelectedPartyId] = useState("");
   const [selectedProductId, setSelectedProductId] = useState("");
   const [stockInRows, setStockInRows] = useState<StockInComponentRow[]>([
-    { component_type: "bottle", quantity: "" },
+    { component_type: "", quantity: "" },
   ]);
   const [remarks, setRemarks] = useState("");
   const [masterCartonPartyId, setMasterCartonPartyId] = useState("");
@@ -251,9 +257,9 @@ export default function WarehousePortalPage() {
   // Stock OUT Manual Form State
   const [outPartyIdInput, setOutPartyIdInput] = useState("");
   const [outProductIdInput, setOutProductIdInput] = useState("");
-  const [outComponentType, setOutComponentType] = useState("bottle");
-  const [outMasterCartonStockId, setOutMasterCartonStockId] = useState("");
-  const [outQtyPcs, setOutQtyPcs] = useState("");
+  const [stockOutRows, setStockOutRows] = useState<StockOutComponentRow[]>([
+    { component_type: "", quantity: "" },
+  ]);
   const [outRemarks, setOutRemarks] = useState("");
 
   // INDEPENDENT FILTERS FOR EACH TAB
@@ -328,7 +334,7 @@ export default function WarehousePortalPage() {
       // Fetch dynamic component types from product_bom table
       const { data: bomTypesData, error: bomTypesError } = await supabase
         .from("product_bom")
-        .select("component_type, ml_capacity, capacity_unit, products(product_name, parties!products_party_id_fkey(name))");
+        .select("product_id, component_type, ml_capacity, capacity_unit, products(product_name, parties!products_party_id_fkey(name))");
       if (bomTypesError) throw bomTypesError;
       if (bomTypesData) setProductBomCapacities(bomTypesData);
       const savedComponentTypes = await fetchSavedComponentTypes();
@@ -340,17 +346,6 @@ export default function WarehousePortalPage() {
         ])
       );
       setDynamicComponentTypes(uniqueTypes);
-      const stockInTypes = uniqueTypes.filter((type) => type.toLowerCase() !== "master_carton");
-      setStockInRows((rows) =>
-        rows.map((row, index) =>
-          index === 0 && !stockInTypes.some((type) => type.toLowerCase() === row.component_type.toLowerCase())
-            ? { ...row, component_type: stockInTypes[0] || "bottle" }
-            : row
-        )
-      );
-      if (uniqueTypes.length > 0 && !uniqueTypes.includes(outComponentType)) {
-        setOutComponentType(uniqueTypes[0]);
-      }
     } catch (e) {
       setWarehouseDataError(getErrorMessage(e));
     } finally {
@@ -385,13 +380,6 @@ export default function WarehousePortalPage() {
       stock.product_name?.toLowerCase() === productsList.find((product) => product.id === masterCartonOutProductId)?.product_name.toLowerCase() ||
       (!stock.product_id && stock.product_name?.toLowerCase() === "all products"))
   );
-  const outMasterCartonStockOptions = stockBalances.filter((stock) =>
-    stock.component_type?.trim().toLowerCase() === "master_carton" &&
-    (stock.party_id === outPartyIdInput ||
-      stock.party_name?.toLowerCase() === partiesList.find((party) => party.id === outPartyIdInput)?.name.toLowerCase()) &&
-    (stock.product_id === outProductIdInput ||
-      stock.product_name?.toLowerCase() === productsList.find((product) => product.id === outProductIdInput)?.product_name.toLowerCase())
-  );
   const filteredProductsForReq = productsList.filter((p) => p.party_id === reqPartyId);
   const filteredProductsForIn = productsList.filter((p) => p.party_id === inPartyId);
   const filteredProductsForOut = productsList.filter((p) => p.party_id === outPartyId);
@@ -399,7 +387,14 @@ export default function WarehousePortalPage() {
   const filteredProductsForMasterCarton = masterCartonProductPartyId === ALL_PARTIES_OPTION
     ? productsList
     : productsList.filter((product) => product.party_id === masterCartonProductPartyId);
-  const stockInComponentTypes = dynamicComponentTypes.filter((type) => type.toLowerCase() !== "master_carton");
+  const getProductComponentTypes = (productId: string) =>
+    Array.from(new Map(
+      productBomCapacities
+        .filter((bom) => bom.product_id === productId && bom.component_type.trim().toLowerCase() !== "master_carton")
+        .map((bom) => [bom.component_type.trim().toLowerCase(), bom.component_type.trim()])
+    ).values());
+  const stockInComponentTypes = getProductComponentTypes(selectedProductId);
+  const stockOutComponentTypes = getProductComponentTypes(outProductIdInput);
   const getCurrentStockQuantity = (
     partyId: string,
     productId: string,
@@ -417,8 +412,9 @@ export default function WarehousePortalPage() {
         const matchesProduct = isSharedProduct
           ? !stock.product_id && stock.product_name?.toLowerCase() === "all products"
           : !!product && (
-              stock.product_id === product.id ||
-              stock.product_name?.toLowerCase() === product.product_name.toLowerCase()
+              stock.product_id
+                ? stock.product_id === product.id
+                : stock.product_name?.toLowerCase() === product.product_name.toLowerCase()
             );
         const matchesComponent =
           stock.component_type?.trim().toLowerCase() === componentType.trim().toLowerCase();
@@ -434,9 +430,6 @@ export default function WarehousePortalPage() {
   const selectedMasterCartonOption = masterCartonOptions.find((option) => option.id === masterCartonOptionId);
   const selectedMasterCartonStock = masterCartonOutStockOptions.find((stock) => stock.id === masterCartonOutStockId);
   const selectedTapeOutStock = tapeOutStockOptions.find((stock) => stock.id === tapeOutStockId);
-  const selectedManualOutMasterCartonStock = outMasterCartonStockOptions.find(
-    (stock) => stock.id === outMasterCartonStockId
-  );
   const masterCartonInAvailable = masterCartonPartyId && masterCartonProductId && selectedMasterCartonOption
     ? getCurrentStockQuantity(
         masterCartonPartyId,
@@ -449,17 +442,19 @@ export default function WarehousePortalPage() {
     ? getCurrentStockQuantity(tapeInWarehouseId, tapeInProductId, selectedTapeComponentType)
     : null;
   const tapeOutAvailable = selectedTapeOutStock?.quantity ?? null;
-  const manualOutAvailable = outComponentType.trim().toLowerCase() === "master_carton"
-    ? selectedManualOutMasterCartonStock?.quantity ?? null
-    : outPartyIdInput && outProductIdInput
-      ? getCurrentStockQuantity(outPartyIdInput, outProductIdInput, outComponentType)
-      : null;
-
   const addStockInComponentRow = () => {
     const usedTypes = new Set(stockInRows.map((row) => row.component_type.toLowerCase()));
     const nextType = stockInComponentTypes.find((type) => !usedTypes.has(type.toLowerCase()));
     if (nextType) {
       setStockInRows((rows) => [...rows, { component_type: nextType, quantity: "" }]);
+    }
+  };
+
+  const addStockOutComponentRow = () => {
+    const usedTypes = new Set(stockOutRows.map((row) => row.component_type.toLowerCase()));
+    const nextType = stockOutComponentTypes.find((type) => !usedTypes.has(type.toLowerCase()));
+    if (nextType) {
+      setStockOutRows((rows) => [...rows, { component_type: nextType, quantity: "" }]);
     }
   };
 
@@ -618,8 +613,12 @@ export default function WarehousePortalPage() {
 
   const handleSaveStockIn = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedPartyId || !selectedProductId) {
+    const product = productsList.find((item) => item.id === selectedProductId);
+    if (!selectedPartyId || !product || product.party_id !== selectedPartyId) {
       return alert("Please select Party and Product.");
+    }
+    if (stockInComponentTypes.length === 0) {
+      return alert("No components are configured for this product. Please ask Admin to add its components.");
     }
     if (
       stockInRows.length === 0 ||
@@ -630,6 +629,9 @@ export default function WarehousePortalPage() {
     const componentTypes = stockInRows.map((row) => row.component_type.trim().toLowerCase());
     if (componentTypes.some((type, index) => !type || componentTypes.indexOf(type) !== index)) {
       return alert("Please select a different component type for each row.");
+    }
+    if (componentTypes.some((type) => !stockInComponentTypes.some((allowedType) => allowedType.toLowerCase() === type))) {
+      return alert("Please select only components configured for this product by Admin.");
     }
 
     setLoading(true);
@@ -643,7 +645,7 @@ export default function WarehousePortalPage() {
       alert(`Stock IN recorded successfully for ${receivedRows.length} component${receivedRows.length === 1 ? "" : "s"}!`);
       setSelectedPartyId("");
       setSelectedProductId("");
-      setStockInRows([{ component_type: stockInComponentTypes[0] || "bottle", quantity: "" }]);
+      setStockInRows([{ component_type: "", quantity: "" }]);
       setRemarks("");
       fetchWarehouseAndMasterData();
     } catch (err: unknown) {
@@ -693,7 +695,9 @@ export default function WarehousePortalPage() {
         (stock) =>
           (stock.party_id === partyId || stock.party_name?.toLowerCase() === partyObj.name.toLowerCase()) &&
           (productId
-            ? stock.product_id === productId || stock.product_name?.toLowerCase() === productName.toLowerCase()
+            ? stock.product_id
+              ? stock.product_id === productId
+              : stock.product_name?.toLowerCase() === productName.toLowerCase()
             : !stock.product_id && stock.product_name?.toLowerCase() === productName.toLowerCase()) &&
           stock.component_type?.toLowerCase() === row.componentType.toLowerCase() &&
             (row.cartonCount === undefined && row.cartonName === undefined ||
@@ -926,68 +930,91 @@ export default function WarehousePortalPage() {
 
   const handleSaveStockOut = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!outPartyIdInput || !outProductIdInput || !outQtyPcs) {
-      return alert("Please select Party, Product, and enter Quantity for Stock OUT.");
+    const party = partiesList.find((item) => item.id === outPartyIdInput);
+    const product = productsList.find((item) => item.id === outProductIdInput);
+    if (!party || !product || product.party_id !== party.id) {
+      return alert("Please select a valid Party and Product.");
     }
-    const qtyNum = Number(outQtyPcs);
-    if (!Number.isSafeInteger(qtyNum) || qtyNum <= 0) {
-      return alert("Please enter a whole-number issue quantity greater than zero.");
+    if (stockOutComponentTypes.length === 0) {
+      return alert("No components are configured for this product. Please ask Admin to add its components.");
+    }
+    if (
+      stockOutRows.length === 0 ||
+      stockOutRows.some((row) => !Number.isSafeInteger(Number(row.quantity)) || Number(row.quantity) <= 0)
+    ) {
+      return alert("Please enter a valid whole-number quantity greater than zero for every component.");
+    }
+
+    const componentTypes = stockOutRows.map((row) => row.component_type.trim().toLowerCase());
+    if (componentTypes.some((type, index) => !type || componentTypes.indexOf(type) !== index)) {
+      return alert("Please select a different component type for each row.");
+    }
+    if (componentTypes.some((type) => !stockOutComponentTypes.some((allowedType) => allowedType.toLowerCase() === type))) {
+      return alert("Please select only components configured for this product by Admin.");
     }
 
     setLoading(true);
     try {
-      const partyObj = partiesList.find((p) => p.id === outPartyIdInput);
-      const prodObj = productsList.find((p) => p.id === outProductIdInput);
-      const isMasterCarton = outComponentType.trim().toLowerCase() === "master_carton";
-      const stockItem = isMasterCarton
-        ? outMasterCartonStockOptions.find((stock) => stock.id === outMasterCartonStockId)
-        : stockBalances.find(
+      const stockUpdates: { id: string; quantity: number }[] = [];
+      const logPayloads = stockOutRows.map((row) => {
+        const quantity = Number(row.quantity);
+        const componentType = row.component_type.trim();
+        const matchingStock = stockBalances.filter(
           (stock) =>
-            (stock.party_id === outPartyIdInput || stock.party_name?.toLowerCase() === partyObj?.name?.toLowerCase()) &&
-            (stock.product_id === outProductIdInput || stock.product_name?.toLowerCase() === prodObj?.product_name?.toLowerCase()) &&
-            stock.component_type?.toLowerCase() === outComponentType.toLowerCase()
+            (stock.party_id === party.id || stock.party_name?.toLowerCase() === party.name.toLowerCase()) &&
+              (stock.product_id
+                ? stock.product_id === product.id
+                : stock.product_name?.toLowerCase() === product.product_name.toLowerCase()) &&
+            stock.component_type?.trim().toLowerCase() === componentType.toLowerCase()
         );
-      if (isMasterCarton && !stockItem) {
-        return alert("Please select the Master Carton type to issue.");
-      }
+        const availableQty = matchingStock.reduce((total, stock) => total + Number(stock.quantity || 0), 0);
+        if (quantity > availableQty) {
+          throw new Error(
+            `Stock Out Error for ${componentType}: available quantity (${availableQty} Pcs) is less than requested quantity (${quantity} Pcs).`
+          );
+        }
 
-      const availableQty = stockItem ? stockItem.quantity : 0;
-      if (qtyNum > availableQty) {
-        const unit = getQuantityUnit(outComponentType);
-        return alert(`Stock Out Error: Available quantity (${availableQty} ${unit}) is less than requested issue quantity (${qtyNum} ${unit}).`);
-      }
+        let remainingQuantity = quantity;
+        for (const stock of matchingStock) {
+          if (remainingQuantity === 0) break;
+          const allocatedQuantity = Math.min(Number(stock.quantity || 0), remainingQuantity);
+          if (allocatedQuantity > 0) {
+            stockUpdates.push({
+              id: stock.id,
+              quantity: Number(stock.quantity || 0) - allocatedQuantity,
+            });
+            remainingQuantity -= allocatedQuantity;
+          }
+        }
 
-      const logPayload = {
-        action_type: "OUT",
-        party_name: partyObj?.name || "N/A",
-        product_name: prodObj?.product_name || "N/A",
-        component_type: outComponentType,
-        quantity: qtyNum,
-        remarks: outRemarks || "Manual Stock OUT entry from Warehouse",
-        created_at: new Date().toISOString(),
-        ...(stockItem?.carton_count == null ? {} : { carton_count: stockItem.carton_count }),
-        ...(stockItem?.carton_name == null ? {} : { carton_name: stockItem.carton_name }),
-      };
+        return {
+          action_type: "OUT",
+          party_name: party.name,
+          product_name: product.product_name,
+          component_type: componentType,
+          quantity,
+          remarks: outRemarks || "Manual Stock OUT entry from Warehouse",
+          created_at: new Date().toISOString(),
+        };
+      });
 
-      const { error: logErr } = await supabase.from("inventory_logs").insert([logPayload]);
+      const { error: logErr } = await supabase.from("inventory_logs").insert(logPayloads);
       if (logErr) throw logErr;
 
-      const newQty = Math.max(0, availableQty - qtyNum);
-      if (stockItem) {
+      for (const stockUpdate of stockUpdates) {
         const { error: stockUpdateError } = await supabase
           .from("inventory")
-          .update({ quantity: newQty })
-          .eq("id", stockItem.id);
+          .update({ quantity: stockUpdate.quantity })
+          .eq("id", stockUpdate.id);
         if (stockUpdateError) throw stockUpdateError;
       }
 
-      alert("Stock OUT recorded successfully & Balance updated!");
+      alert(`Stock OUT recorded successfully for ${stockOutRows.length} component${stockOutRows.length === 1 ? "" : "s"}!`);
       setOutPartyIdInput("");
       setOutProductIdInput("");
-      setOutMasterCartonStockId("");
-      setOutQtyPcs("");
+      setStockOutRows([{ component_type: "", quantity: "" }]);
       setOutRemarks("");
-      fetchWarehouseAndMasterData();
+      await fetchWarehouseAndMasterData();
     } catch (err: unknown) {
       alert("Error: " + getErrorMessage(err));
     } finally {
@@ -1483,6 +1510,7 @@ export default function WarehousePortalPage() {
                       onChange={(e) => {
                         setSelectedPartyId(e.target.value);
                         setSelectedProductId("");
+                        setStockInRows([{ component_type: "", quantity: "" }]);
                       }}
                       className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
                       required
@@ -1498,10 +1526,17 @@ export default function WarehousePortalPage() {
                     <label className="text-xs text-slate-400 block mb-1">Select Product</label>
                     <select
                       value={selectedProductId}
-                      onChange={(e) => setSelectedProductId(e.target.value)}
+                      onChange={(e) => {
+                        const productId = e.target.value;
+                        setSelectedProductId(productId);
+                        setStockInRows([{
+                          component_type: getProductComponentTypes(productId)[0] || "",
+                          quantity: "",
+                        }]);
+                      }}
                       className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
                       required
-                      disabled={!selectedPartyId}
+                      disabled={!selectedPartyId || loading}
                     >
                       <option value="">-- Select Product --</option>
                       {filteredProductsForSelect.map((prod) => (
@@ -1513,6 +1548,11 @@ export default function WarehousePortalPage() {
                 </div>
 
                 <div className="space-y-3">
+                  {selectedProductId && stockInComponentTypes.length === 0 && (
+                    <p className="text-xs text-amber-300">
+                      No components are configured for this product. Please ask Admin to add its components.
+                    </p>
+                  )}
                   <div className="flex items-center justify-between gap-3">
                     <h3 className="text-xs font-semibold text-slate-300">Components &amp; Quantities</h3>
                     <button
@@ -1525,7 +1565,7 @@ export default function WarehousePortalPage() {
                     </button>
                   </div>
                   {stockInRows.map((row, rowIndex) => (
-                    <div key={row.component_type} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-end">
+                    <div key={`${row.component_type}-${rowIndex}`} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-end">
                       <div>
                         <label className="text-xs text-slate-400 block mb-1">
                           Component Type {rowIndex + 1}
@@ -1542,6 +1582,7 @@ export default function WarehousePortalPage() {
                           className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white uppercase"
                           required
                         >
+                          <option value="" disabled>-- Select configured component --</option>
                           {stockInComponentTypes.map((type) => (
                             <option
                               key={type}
@@ -2214,7 +2255,7 @@ export default function WarehousePortalPage() {
             <div className="bg-[#121827] border border-slate-800 p-4 sm:p-6 rounded-2xl shadow-xl space-y-6">
               <h2 className="text-sm sm:text-md font-bold text-white">Manual Stock OUT Form (Issue / Dispatch Material)</h2>
               <form onSubmit={handleSaveStockOut} className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="text-xs text-slate-400 block mb-1">Select Party / Company</label>
                     <select
@@ -2222,7 +2263,7 @@ export default function WarehousePortalPage() {
                       onChange={(e) => {
                         setOutPartyIdInput(e.target.value);
                         setOutProductIdInput("");
-                        setOutMasterCartonStockId("");
+                        setStockOutRows([{ component_type: "", quantity: "" }]);
                       }}
                       className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
                       required
@@ -2239,12 +2280,16 @@ export default function WarehousePortalPage() {
                     <select
                       value={outProductIdInput}
                       onChange={(e) => {
-                        setOutProductIdInput(e.target.value);
-                        setOutMasterCartonStockId("");
+                        const productId = e.target.value;
+                        setOutProductIdInput(productId);
+                        setStockOutRows([{
+                          component_type: getProductComponentTypes(productId)[0] || "",
+                          quantity: "",
+                        }]);
                       }}
                       className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
                       required
-                      disabled={!outPartyIdInput}
+                      disabled={!outPartyIdInput || loading}
                     >
                       <option value="">-- Select Product --</option>
                       {filteredProductsForOutForm.map((prod) => (
@@ -2252,72 +2297,102 @@ export default function WarehousePortalPage() {
                       ))}
                     </select>
                   </div>
-
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">Component Type</label>
-                    <select
-                      value={outComponentType}
-                      onChange={(e) => {
-                        setOutComponentType(e.target.value);
-                        setOutMasterCartonStockId("");
-                      }}
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white uppercase"
-                    >
-                      {dynamicComponentTypes.map((type) => (
-                        <option key={type} value={type}>{type.replace("_", " ").toUpperCase()}</option>
-                      ))}
-                    </select>
-                  </div>
-                  {outComponentType.trim().toLowerCase() === "master_carton" && (
-                    <div>
-                      <label className="text-xs text-cyan-400 block mb-1">Master Carton Type</label>
-                      <select
-                        value={outMasterCartonStockId}
-                        onChange={(event) => setOutMasterCartonStockId(event.target.value)}
-                        className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
-                        required
-                      >
-                        <option value="">-- Select Carton Number or Name --</option>
-                        {outMasterCartonStockOptions.map((stock) => (
-                          <option key={stock.id} value={stock.id}>
-                            {getMasterCartonLabel(stock)} ({stock.quantity} available)
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs text-amber-400 block mb-1">
-                      {outComponentType === "master_carton" ? "Master Cartons to Issue" : "Issue Quantity (Pcs)"}
-                    </label>
-                    <input
-                      type="number"
-                      value={outQtyPcs}
-                      onChange={(e) => setOutQtyPcs(e.target.value)}
-                      placeholder="e.g. 1000"
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-amber-300 font-mono font-bold"
-                      required
-                    />
-                    {manualOutAvailable !== null && (
-                      <p className="mt-1 text-[10px] text-cyan-300">
-                        Available now: {manualOutAvailable} {getQuantityUnit(outComponentType)}
-                      </p>
-                    )}
+                <div className="space-y-3">
+                  {outProductIdInput && stockOutComponentTypes.length === 0 && (
+                    <p className="text-xs text-amber-300">
+                      No components are configured for this product. Please ask Admin to add its components.
+                    </p>
+                  )}
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-xs font-semibold text-slate-300">Components &amp; Quantities</h3>
+                    <button
+                      type="button"
+                      onClick={addStockOutComponentRow}
+                      disabled={stockOutRows.length >= stockOutComponentTypes.length}
+                      className="px-3 py-2 rounded-lg bg-blue-600/20 text-blue-300 border border-blue-500/30 text-xs font-bold hover:bg-blue-600/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      + Add Component
+                    </button>
                   </div>
+                  {stockOutRows.map((row, rowIndex) => (
+                    <div key={`${row.component_type}-${rowIndex}`} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-end">
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">Component Type {rowIndex + 1}</label>
+                        <select
+                          value={row.component_type}
+                          onChange={(event) =>
+                            setStockOutRows((rows) =>
+                              rows.map((item, index) =>
+                                index === rowIndex ? { ...item, component_type: event.target.value } : item
+                              )
+                            )
+                          }
+                          className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white uppercase"
+                          required
+                        >
+                          <option value="" disabled>-- Select configured component --</option>
+                          {stockOutComponentTypes.map((type) => (
+                            <option
+                              key={type}
+                              value={type}
+                              disabled={stockOutRows.some(
+                                (item, index) =>
+                                  index !== rowIndex && item.component_type.toLowerCase() === type.toLowerCase()
+                              )}
+                            >
+                              {type.replace("_", " ").toUpperCase()}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-amber-400 block mb-1">Issue Quantity (Pcs)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={row.quantity}
+                          onChange={(event) =>
+                            setStockOutRows((rows) =>
+                              rows.map((item, index) =>
+                                index === rowIndex ? { ...item, quantity: event.target.value } : item
+                              )
+                            )
+                          }
+                          placeholder="e.g. 1000"
+                          className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-amber-300 font-mono font-bold"
+                          required
+                        />
+                        {outPartyIdInput && outProductIdInput && (
+                          <p className="mt-1 text-[10px] text-cyan-300">
+                            Available now: {getCurrentStockQuantity(outPartyIdInput, outProductIdInput, row.component_type)} Pcs
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setStockOutRows((rows) => rows.filter((_, index) => index !== rowIndex))}
+                        disabled={stockOutRows.length === 1}
+                        aria-label={`Remove component row ${rowIndex + 1}`}
+                        className="px-3 py-3 rounded-lg bg-rose-600/20 text-rose-300 border border-rose-500/30 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
 
-                  <div>
-                    <label className="text-xs text-slate-400 block mb-1">Remarks / Purpose</label>
-                    <input
-                      type="text"
-                      value={outRemarks}
-                      onChange={(e) => setOutRemarks(e.target.value)}
-                      placeholder="Reason for manual stock out / issue"
-                      className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
-                    />
-                  </div>
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">Remarks / Purpose</label>
+                  <input
+                    type="text"
+                    value={outRemarks}
+                    onChange={(e) => setOutRemarks(e.target.value)}
+                    placeholder="Reason for manual stock out / issue"
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                  />
                 </div>
 
                 <button
