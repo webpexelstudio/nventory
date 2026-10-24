@@ -223,10 +223,10 @@ export default function AdminPage() {
   const [showAddTypeModal, setShowAddTypeModal] = useState(false);
 
   const createDefaultAssemblingRow = (): AssemblingRow => ({
-    component_type: "bottle",
-    ml_capacity: "500",
+    component_type: "",
+    ml_capacity: "",
     capacity_unit: "ML",
-    weight_10_pcs_grams: "122",
+    weight_10_pcs_grams: "",
   });
 
   const [assemblingRows, setAssemblingRows] = useState<AssemblingRow[]>([
@@ -956,11 +956,59 @@ export default function AdminPage() {
         bom.component_type.trim().toLowerCase() === componentType.trim().toLowerCase()
     );
 
+  const canDeleteProductComponent = async (productId: string, componentType: string) => {
+    const product = productsList.find((item) => item.id === productId);
+    if (!product) throw new Error("Could not find the product for this component.");
+    const productPartyName = partiesList.find((party) => party.id === product.party_id)?.name ?? product.parties?.name;
+
+    const { data, error } = await supabase
+      .from("inventory")
+      .select("quantity, product_id, product_name, party_id, party_name, component_type");
+    if (error) throw error;
+
+    const remainingBalance = (data ?? [])
+      .filter((stock) => {
+        if (stock.component_type?.trim().toLowerCase() !== componentType.trim().toLowerCase()) return false;
+        if (stock.product_id) return stock.product_id === productId;
+        return (
+          stock.product_name?.trim().toLowerCase() === product.product_name.trim().toLowerCase() &&
+          (stock.party_id
+            ? stock.party_id === product.party_id
+            : stock.party_name?.trim().toLowerCase() === productPartyName?.trim().toLowerCase())
+        );
+      })
+      .reduce((total, stock) => total + Number(stock.quantity || 0), 0);
+
+    if (remainingBalance > 0) {
+      alert(
+        `Cannot delete "${formatComponentTypeLabel(componentType)}". Remaining stock balance: ${remainingBalance} Pcs. ` +
+        "Please issue or adjust the stock to 0 first. IN/OUT history will be retained."
+      );
+      return false;
+    }
+
+    return true;
+  };
+
   const handleAddAssemblingRow = () => {
+    const usedTypes = new Set([
+      ...assemblingRows.map((row) => row.component_type.trim().toLowerCase()).filter(Boolean),
+      ...(selectedProductForBom
+        ? bomViewList
+            .filter((bom) => bom.product_id === selectedProductForBom)
+            .map((bom) => bom.component_type.trim().toLowerCase())
+        : []),
+    ]);
+    const availableType = componentTypes.find((type) => !usedTypes.has(type.trim().toLowerCase()));
+    if (!availableType) {
+      alert("All available component types are already added for this product.");
+      return;
+    }
+
     const nextRows: AssemblingRow[] = [
       ...assemblingRows,
       {
-        component_type: componentTypes[0] || "bottle",
+        component_type: "",
         ml_capacity: "",
         capacity_unit: "ML",
         weight_10_pcs_grams: "",
@@ -991,6 +1039,7 @@ export default function AdminPage() {
       if (savedMatch) {
         setLoading(true);
         try {
+          if (!(await canDeleteProductComponent(savedMatch.product_id, savedMatch.component_type))) return;
           const { error } = await supabase.from("product_bom").delete().eq("id", savedMatch.id);
           if (error) throw error;
           alert(`Component "${formatComponentTypeLabel(row.component_type)}" removed from this product.`);
@@ -998,6 +1047,7 @@ export default function AdminPage() {
         } catch (err: unknown) {
           console.error("Could not remove product BOM item:", err);
           alert("Could not remove product BOM item: " + formatDatabaseError(err));
+          return;
         } finally {
           setLoading(false);
         }
@@ -1021,6 +1071,7 @@ export default function AdminPage() {
 
     setLoading(true);
     try {
+      if (!(await canDeleteProductComponent(match.product_id, match.component_type))) return;
       const { error } = await supabase.from("product_bom").delete().eq("id", match.id);
       if (error) throw error;
       await fetchMasterData();
@@ -1227,6 +1278,9 @@ export default function AdminPage() {
     if (!confirm("Delete this Assembling Component?")) return;
     setLoading(true);
     try {
+      const bomItem = bomViewList.find((bom) => bom.id === bomId);
+      if (!bomItem) throw new Error("Could not find the component to delete.");
+      if (!(await canDeleteProductComponent(bomItem.product_id, bomItem.component_type))) return;
       const { error } = await supabase.from("product_bom").delete().eq("id", bomId);
       if (error) throw error;
       alert("Deleted Successfully!");
@@ -1360,18 +1414,29 @@ export default function AdminPage() {
         log.product_name?.toLowerCase() === stock.product_name?.toLowerCase() &&
         log.component_type?.toLowerCase() === stock.component_type?.toLowerCase()
     );
-  const filteredInventoryList = inventoryList.filter((stock) => {
-    if (!filterByDateAndText(inventoryFilters, undefined, stock.party_name, stock.product_name)) return false;
-    if (!inventoryFilters.startDate && !inventoryFilters.endDate) return true;
+  const filteredInventoryList = inventoryList
+    .filter((stock) => {
+      if (!filterByDateAndText(inventoryFilters, undefined, stock.party_name, stock.product_name)) return false;
+      if (!inventoryFilters.startDate && !inventoryFilters.endDate) return true;
 
-    return getStockMovementLogs(stock).some((log) => {
-      const movementDate = new Date(log.created_at).toISOString().split("T")[0];
-      return (!inventoryFilters.startDate || movementDate >= inventoryFilters.startDate) &&
-        (!inventoryFilters.endDate || movementDate <= inventoryFilters.endDate);
-    });
-  });
-  const masterCartonInventory = inventoryList.filter(
-    (stock) => stock.component_type?.trim().toLowerCase() === "master_carton"
+      return getStockMovementLogs(stock).some((log) => {
+        const movementDate = new Date(log.created_at).toISOString().split("T")[0];
+        return (!inventoryFilters.startDate || movementDate >= inventoryFilters.startDate) &&
+          (!inventoryFilters.endDate || movementDate <= inventoryFilters.endDate);
+      });
+    })
+    .sort((first, second) =>
+      (first.party_name || "General").localeCompare(second.party_name || "General", undefined, { sensitivity: "base" }) ||
+      (first.product_name || "General").localeCompare(second.product_name || "General", undefined, { sensitivity: "base" })
+    );
+  const masterCartonInventory = inventoryList
+    .filter((stock) => stock.component_type?.trim().toLowerCase() === "master_carton")
+    .sort((first, second) =>
+      (first.party_name || "General").localeCompare(second.party_name || "General", undefined, { sensitivity: "base" }) ||
+      (first.product_name || "General").localeCompare(second.product_name || "General", undefined, { sensitivity: "base" })
+    );
+  const sortedPartyInventoryStock = [...partyInventoryStock].sort((first, second) =>
+    (first.product_name || "General").localeCompare(second.product_name || "General", undefined, { sensitivity: "base" })
   );
   const masterCartonWarehouseLogs = warehouseLogs.filter(
     (log) => log.component_type?.trim().toLowerCase() === "master_carton"
@@ -1630,7 +1695,28 @@ export default function AdminPage() {
                     <div className="flex-1 w-full">
                       <label className="block text-[10px] text-slate-500 mb-1">Component Type</label>
                       <select value={row.component_type} onChange={(e) => handleRowChange(index, "component_type", e.target.value)} className="w-full bg-[#121827] border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 uppercase" required>
-                        {componentTypes.map((t) => (<option key={t} value={t}>{formatComponentTypeLabel(t)}</option>))}
+                        <option value="" disabled>-- Select component type --</option>
+                        {componentTypes.map((t) => {
+                          const normalizedType = t.trim().toLowerCase();
+                          const isSelectedInAnotherRow = assemblingRows.some(
+                            (otherRow, otherIndex) =>
+                              otherIndex !== index &&
+                              otherRow.component_type.trim().toLowerCase() === normalizedType
+                          );
+                          const isAlreadySaved = isComponentTypeAlreadySavedForProduct(
+                            selectedProductForBom,
+                            t
+                          );
+                          return (
+                            <option
+                              key={t}
+                              value={t}
+                              disabled={isSelectedInAnotherRow || (isAlreadySaved && row.component_type.trim().toLowerCase() !== normalizedType)}
+                            >
+                              {formatComponentTypeLabel(t)}
+                            </option>
+                          );
+                        })}
                       </select>
                     </div>
                     <div className="flex-1 w-full">
@@ -2239,7 +2325,7 @@ export default function AdminPage() {
                         </thead>
                         <tbody className="divide-y divide-slate-800">
                           {partyInventoryStock.length > 0 ? (
-                            partyInventoryStock.map((inv: any, i: number) => (
+                            sortedPartyInventoryStock.map((inv: any, i: number) => (
                               <tr key={i}>
                                 <td className="p-2.5 font-bold text-emerald-400">{inv.product_name}</td>
                                 <td className="p-2.5 uppercase">{inv.component_type}</td>

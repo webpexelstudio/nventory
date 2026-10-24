@@ -133,6 +133,7 @@ interface ProductBomCapacity {
 interface StockInComponentRow {
   component_type: string;
   quantity: string;
+  remarks: string;
 }
 
 interface StockOutComponentRow {
@@ -226,9 +227,8 @@ export default function WarehousePortalPage() {
   const [selectedPartyId, setSelectedPartyId] = useState("");
   const [selectedProductId, setSelectedProductId] = useState("");
   const [stockInRows, setStockInRows] = useState<StockInComponentRow[]>([
-    { component_type: "", quantity: "" },
+    { component_type: "", quantity: "", remarks: "" },
   ]);
-  const [remarks, setRemarks] = useState("");
   const [masterCartonPartyId, setMasterCartonPartyId] = useState("");
   const [masterCartonProductPartyId, setMasterCartonProductPartyId] = useState("");
   const [masterCartonProductId, setMasterCartonProductId] = useState("");
@@ -446,7 +446,7 @@ export default function WarehousePortalPage() {
     const usedTypes = new Set(stockInRows.map((row) => row.component_type.toLowerCase()));
     const nextType = stockInComponentTypes.find((type) => !usedTypes.has(type.toLowerCase()));
     if (nextType) {
-      setStockInRows((rows) => [...rows, { component_type: nextType, quantity: "" }]);
+      setStockInRows((rows) => [...rows, { component_type: nextType, quantity: "", remarks: "" }]);
     }
   };
 
@@ -639,14 +639,14 @@ export default function WarehousePortalPage() {
       const receivedRows = stockInRows.map((row) => ({
         componentType: row.component_type,
         quantity: Number(row.quantity),
+        remarks: row.remarks.trim(),
       }));
-      await recordWarehouseStockIn(selectedPartyId, selectedProductId, receivedRows, remarks);
+      await recordWarehouseStockIn(selectedPartyId, selectedProductId, receivedRows, "");
 
       alert(`Stock IN recorded successfully for ${receivedRows.length} component${receivedRows.length === 1 ? "" : "s"}!`);
       setSelectedPartyId("");
       setSelectedProductId("");
-      setStockInRows([{ component_type: "", quantity: "" }]);
-      setRemarks("");
+      setStockInRows([{ component_type: "", quantity: "", remarks: "" }]);
       fetchWarehouseAndMasterData();
     } catch (err: unknown) {
       alert("Stock IN failed: " + getErrorMessage(err));
@@ -661,6 +661,7 @@ export default function WarehousePortalPage() {
     receivedRows: {
       componentType: string;
       quantity: number;
+      remarks?: string;
       planType?: string;
       nigehbanQuantity?: number;
       cartonCount?: number;
@@ -679,7 +680,8 @@ export default function WarehousePortalPage() {
       product_name: productName,
       component_type: row.componentType,
       quantity: row.quantity,
-      remarks: entryRemarks || "Stock IN entry in Warehouse",
+      remarks: row.remarks?.trim() ||
+        (row.remarks !== undefined ? "" : entryRemarks || "Stock IN entry in Warehouse"),
       created_at: new Date().toISOString(),
       ...(row.planType === undefined ? {} : { plan_type: row.planType }),
       ...(row.nigehbanQuantity === undefined ? {} : { nigehban_quantity: row.nigehbanQuantity }),
@@ -1096,11 +1098,16 @@ export default function WarehousePortalPage() {
     return true;
   });
 
-  const filteredStockBalances = stockBalances.filter((s) => {
-    if (balPartyId && s.party_id !== balPartyId && s.party_name !== partiesList.find(p => p.id === balPartyId)?.name) return false;
-    if (balProductId && s.product_id !== balProductId && s.product_name !== productsList.find(p => p.id === balProductId)?.product_name) return false;
-    return true;
-  });
+  const filteredStockBalances = stockBalances
+    .filter((s) => {
+      if (balPartyId && s.party_id !== balPartyId && s.party_name !== partiesList.find(p => p.id === balPartyId)?.name) return false;
+      if (balProductId && s.product_id !== balProductId && s.product_name !== productsList.find(p => p.id === balProductId)?.product_name) return false;
+      return true;
+    })
+    .sort((first, second) =>
+      (first.party_name || "General Party").localeCompare(second.party_name || "General Party", undefined, { sensitivity: "base" }) ||
+      (first.product_name || "General Product").localeCompare(second.product_name || "General Product", undefined, { sensitivity: "base" })
+    );
   const getStockBalanceCapacity = (stock: StockBalance) => {
     const componentType = stock.component_type.trim().toLowerCase();
     const matchingBom = productBomCapacities.find((bom) => {
@@ -1126,6 +1133,23 @@ export default function WarehousePortalPage() {
     stock.component_type.trim().toLowerCase() === "master_carton"
       ? `MASTER CARTON (${getMasterCartonLabel(stock)})`
       : stock.component_type.toUpperCase();
+  const getStockBalanceRemarks = (stock: StockBalance) => {
+    const matchingLog = inOutLogs.find((log) => {
+      if (log.action_type !== "IN") return false;
+      if (
+        (log.party_name || "General Party").trim().toLowerCase() !== (stock.party_name || "General Party").trim().toLowerCase() ||
+        (log.product_name || "General Product").trim().toLowerCase() !== (stock.product_name || "General Product").trim().toLowerCase() ||
+        log.component_type.trim().toLowerCase() !== stock.component_type.trim().toLowerCase()
+      ) {
+        return false;
+      }
+
+      if (stock.component_type.trim().toLowerCase() !== "master_carton") return true;
+      return (log.carton_count ?? null) === (stock.carton_count ?? null) &&
+        (log.carton_name ?? null) === (stock.carton_name ?? null);
+    });
+    return matchingLog?.remarks?.trim() || "—";
+  };
   const getStockBalanceExportRows = () =>
     filteredStockBalances.map((stock) => ({
       "Party Name": stock.party_name || "General",
@@ -1133,6 +1157,7 @@ export default function WarehousePortalPage() {
       "Component Type": getStockBalanceComponentLabel(stock),
       "ML / GM": getStockBalanceCapacity(stock),
       "Qty": `${stock.quantity || 0} ${getQuantityUnit(stock.component_type)}`,
+      "Remarks": getStockBalanceRemarks(stock),
     }));
 
   return (
@@ -1510,7 +1535,7 @@ export default function WarehousePortalPage() {
                       onChange={(e) => {
                         setSelectedPartyId(e.target.value);
                         setSelectedProductId("");
-                        setStockInRows([{ component_type: "", quantity: "" }]);
+                        setStockInRows([{ component_type: "", quantity: "", remarks: "" }]);
                       }}
                       className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
                       required
@@ -1532,6 +1557,7 @@ export default function WarehousePortalPage() {
                         setStockInRows([{
                           component_type: getProductComponentTypes(productId)[0] || "",
                           quantity: "",
+                          remarks: "",
                         }]);
                       }}
                       className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
@@ -1565,7 +1591,7 @@ export default function WarehousePortalPage() {
                     </button>
                   </div>
                   {stockInRows.map((row, rowIndex) => (
-                    <div key={`${row.component_type}-${rowIndex}`} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-end">
+                    <div key={`${row.component_type}-${rowIndex}`} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_auto] gap-3 items-end">
                       <div>
                         <label className="text-xs text-slate-400 block mb-1">
                           Component Type {rowIndex + 1}
@@ -1621,6 +1647,22 @@ export default function WarehousePortalPage() {
                           </p>
                         )}
                       </div>
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">Remarks / Note</label>
+                        <input
+                          type="text"
+                          value={row.remarks}
+                          onChange={(event) =>
+                            setStockInRows((rows) =>
+                              rows.map((item, index) =>
+                                index === rowIndex ? { ...item, remarks: event.target.value } : item
+                              )
+                            )
+                          }
+                          placeholder="Supplier details or batch info"
+                          className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                        />
+                      </div>
                       <button
                         type="button"
                         onClick={() => setStockInRows((rows) => rows.filter((_, index) => index !== rowIndex))}
@@ -1632,17 +1674,6 @@ export default function WarehousePortalPage() {
                       </button>
                     </div>
                   ))}
-                </div>
-
-                <div>
-                  <label className="text-xs text-slate-400 block mb-1">Remarks / Note</label>
-                  <input
-                    type="text"
-                    value={remarks}
-                    onChange={(e) => setRemarks(e.target.value)}
-                    placeholder="Supplier details or batch info"
-                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
-                  />
                 </div>
 
                 <button
@@ -2566,13 +2597,14 @@ export default function WarehousePortalPage() {
                     onClick={() =>
                       exportPDF(
                         "Warehouse Inventory Stock Balance",
-                        ["Party Name", "Product Name", "Component Type", "ML / GM", "Qty"],
+                        ["Party Name", "Product Name", "Component Type", "ML / GM", "Qty", "Remarks"],
                         filteredStockBalances.map((stock) => [
                           stock.party_name || "General",
                           stock.product_name || "General",
                           getStockBalanceComponentLabel(stock),
                           getStockBalanceCapacity(stock),
                           `${stock.quantity || 0} ${getQuantityUnit(stock.component_type)}`,
+                          getStockBalanceRemarks(stock),
                         ])
                       )
                     }
@@ -2592,6 +2624,7 @@ export default function WarehousePortalPage() {
                         <th className="p-3">Product Name</th>
                         <th className="p-3">Component Type</th>
                         <th className="p-3 text-amber-400">Available Quantity</th>
+                        <th className="p-3">Remarks</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800">
@@ -2601,6 +2634,7 @@ export default function WarehousePortalPage() {
                           <td className="p-3 text-emerald-400">{stk.product_name || "General Product"}</td>
                           <td className="p-3 uppercase text-indigo-300">{getStockBalanceComponentLabel(stk)}</td>
                           <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{stk.quantity || 0} {getQuantityUnit(stk.component_type)}</td>
+                          <td className="p-3 text-slate-400">{getStockBalanceRemarks(stk)}</td>
                         </tr>
                       ))}
                     </tbody>

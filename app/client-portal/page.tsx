@@ -233,7 +233,9 @@ export default function ClientPortalPage() {
         ])
       ) as string[];
 
-      setProductOptions(uniqueProducts);
+      setProductOptions(uniqueProducts.sort((first, second) =>
+        first.localeCompare(second, undefined, { sensitivity: "base" })
+      ));
     } catch (err) {
       console.error(err);
       setMaterialReturnsError(
@@ -316,9 +318,13 @@ export default function ClientPortalPage() {
 
   const filteredIn = applyFilters(inLogs, inFilterProduct, inFilterStartDate, inFilterEndDate);
   const filteredOut = applyFilters(outLogs, outFilterProduct, outFilterStartDate, outFilterEndDate);
-  const filteredBal = balances.filter((b) =>
-    balanceFilterProduct ? b.product_name?.toLowerCase().includes(balanceFilterProduct.toLowerCase()) : true
-  );
+  const filteredBal = balances
+    .filter((b) =>
+      balanceFilterProduct ? b.product_name?.toLowerCase().includes(balanceFilterProduct.toLowerCase()) : true
+    )
+    .sort((first, second) =>
+      (first.product_name || "N/A").localeCompare(second.product_name || "N/A", undefined, { sensitivity: "base" })
+    );
 
   return (
     <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-3 sm:p-6 font-sans space-y-6 uppercase">

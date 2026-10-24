@@ -27,6 +27,8 @@ interface InventoryLog {
   quantity: number;
   remarks: string;
   created_at: string;
+  carton_count?: number | null;
+  carton_name?: string | null;
 }
 
 interface StockBalance {
@@ -37,6 +39,8 @@ interface StockBalance {
   product_name?: string;
   component_type: string;
   quantity: number;
+  carton_count?: number | null;
+  carton_name?: string | null;
 }
 
 interface ProductBomCapacity {
@@ -187,11 +191,16 @@ export default function WarehouseStaffPortal() {
   };
 
   // Filtered lists
-  const filteredStockBalances = stockBalances.filter((s) => {
-    if (balPartyId && s.party_id !== balPartyId) return false;
-    if (balProductId && s.product_id !== balProductId) return false;
-    return true;
-  });
+  const filteredStockBalances = stockBalances
+    .filter((s) => {
+      if (balPartyId && s.party_id !== balPartyId) return false;
+      if (balProductId && s.product_id !== balProductId) return false;
+      return true;
+    })
+    .sort((first, second) =>
+      (first.party_name || "General").localeCompare(second.party_name || "General", undefined, { sensitivity: "base" }) ||
+      (first.product_name || "General").localeCompare(second.product_name || "General", undefined, { sensitivity: "base" })
+    );
   const getStockBalanceCapacity = (stock: StockBalance) => {
     const componentType = stock.component_type.trim().toLowerCase();
     const matchingBom = productBomCapacities.find((bom) => {
@@ -202,6 +211,23 @@ export default function WarehouseStaffPortal() {
       ? "—"
       : `${matchingBom.ml_capacity} ${matchingBom.capacity_unit || "ML"}`;
   };
+  const getStockBalanceRemarks = (stock: StockBalance) => {
+    const matchingLog = inOutLogs.find((log) => {
+      if (log.action_type !== "IN") return false;
+      if (
+        (log.party_name || "General").trim().toLowerCase() !== (stock.party_name || "General").trim().toLowerCase() ||
+        (log.product_name || "General").trim().toLowerCase() !== (stock.product_name || "General").trim().toLowerCase() ||
+        log.component_type.trim().toLowerCase() !== stock.component_type.trim().toLowerCase()
+      ) {
+        return false;
+      }
+
+      if (stock.component_type.trim().toLowerCase() !== "master_carton") return true;
+      return (log.carton_count ?? null) === (stock.carton_count ?? null) &&
+        (log.carton_name ?? null) === (stock.carton_name ?? null);
+    });
+    return matchingLog?.remarks?.trim() || "—";
+  };
   const getStockBalanceExportRows = () =>
     filteredStockBalances.map((stock) => ({
       "Party Name": stock.party_name || "General",
@@ -209,6 +235,7 @@ export default function WarehouseStaffPortal() {
       "Component Type": stock.component_type.toUpperCase(),
       "ML / GM": getStockBalanceCapacity(stock),
       "Qty": stock.quantity,
+      "Remarks": getStockBalanceRemarks(stock),
     }));
   const getStockLogExportRows = (logs: InventoryLog[]) =>
     logs.map((log) => ({
@@ -358,13 +385,14 @@ export default function WarehouseStaffPortal() {
                     onClick={() =>
                       exportPDF(
                         "Warehouse Inventory Stock Balance",
-                        ["Party Name", "Product Name", "Component Type", "ML / GM", "Qty"],
+                        ["Party Name", "Product Name", "Component Type", "ML / GM", "Qty", "Remarks"],
                         filteredStockBalances.map((stock) => [
                           stock.party_name || "General",
                           stock.product_name || "General",
                           stock.component_type.toUpperCase(),
                           getStockBalanceCapacity(stock),
                           stock.quantity,
+                          getStockBalanceRemarks(stock),
                         ])
                       )
                     }
@@ -384,6 +412,7 @@ export default function WarehouseStaffPortal() {
                         <th className="p-3">Product Name</th>
                         <th className="p-3">Component Type</th>
                         <th className="p-3 text-amber-400">Available Quantity</th>
+                        <th className="p-3">Remarks</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800">
@@ -393,6 +422,7 @@ export default function WarehouseStaffPortal() {
                           <td className="p-3 text-emerald-400">{stk.product_name || "General"}</td>
                           <td className="p-3 uppercase text-indigo-300">{stk.component_type}</td>
                           <td className="p-3 font-mono font-bold text-amber-300 whitespace-nowrap">{stk.quantity} Pcs</td>
+                          <td className="p-3 text-slate-400">{getStockBalanceRemarks(stk)}</td>
                         </tr>
                       ))}
                     </tbody>
