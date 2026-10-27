@@ -106,22 +106,14 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
         .order("rent_date", { ascending: false })
         .order("created_at", { ascending: false })
     );
-    const companiesQuery =
-      mode === "admin"
-        ? Promise.resolve(supabase.from("parties").select("id, name").order("name"))
-        : Promise.resolve(null);
-    const driversQuery =
-      mode === "admin"
-        ? Promise.resolve(supabase.from("transportation_drivers").select("id, name").order("name"))
-        : Promise.resolve(null);
-    const tripDetailsQuery =
-      mode === "admin"
-        ? Promise.resolve(supabase.from("transportation_trip_details").select("id, name").order("name"))
-        : Promise.resolve(null);
-    const vehiclesQuery =
-      mode === "admin"
-        ? Promise.resolve(supabase.from("transportation_vehicles").select("id, name").order("name"))
-        : Promise.resolve(null);
+    const companiesQuery = Promise.resolve(supabase.from("parties").select("id, name").order("name"));
+    const driversQuery = Promise.resolve(supabase.from("transportation_drivers").select("id, name").order("name"));
+    const tripDetailsQuery = Promise.resolve(
+      supabase.from("transportation_trip_details").select("id, name").order("name")
+    );
+    const vehiclesQuery = Promise.resolve(
+      supabase.from("transportation_vehicles").select("id, name").order("name")
+    );
 
     void Promise.all([rentsQuery, companiesQuery, driversQuery, tripDetailsQuery, vehiclesQuery])
       .then(([rentResult, companyResult, driverResult, tripDetailsResult, vehicleResult]) => {
@@ -451,7 +443,7 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
 
   const pendingRents = rents.filter((rent) => rent.payment_status === "pending");
   const paidRents = rents.filter((rent) => rent.payment_status === "paid");
-  const statusFilteredRents = mode === "viewer" ? rents : activeTab === "pending" ? pendingRents : paidRents;
+  const statusFilteredRents = activeTab === "pending" ? pendingRents : paidRents;
   const availableRentDrivers = Array.from(new Set(rents.map((rent) => rent.driver.trim()).filter(Boolean))).sort(
     (a, b) => a.localeCompare(b)
   );
@@ -508,7 +500,7 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
     );
     XLSX.utils.book_append_sheet(workbook, rentSheet, "Transportation Rents");
     XLSX.utils.book_append_sheet(workbook, summarySheet, "Pending by Driver");
-    const suffix = mode === "admin" ? activeTab : "all";
+    const suffix = activeTab;
     XLSX.writeFile(workbook, `Transportation_Rents_${suffix}_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
@@ -519,7 +511,7 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
       180 + summaryRows * 26 + visibleRents.length * 8 + driverRentGroups.length * 32
     );
     const doc = new jsPDF({ unit: "mm", format: [297, pageHeight] });
-    const reportStatus = mode === "admin" ? activeTab.toUpperCase() : "ALL";
+    const reportStatus = activeTab.toUpperCase();
     doc.setFontSize(16);
     doc.setFont("helvetica", "bold");
     doc.text(`TRANSPORTATION RENTS - ${reportStatus}`, 14, 18);
@@ -629,7 +621,7 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
       detailsY += group.rents.length * 8 + 32;
     });
 
-    const suffix = mode === "admin" ? activeTab : "all";
+    const suffix = activeTab;
     doc.save(`transportation_rents_${suffix}_${new Date().toISOString().slice(0, 10)}.pdf`);
   };
 
@@ -687,10 +679,25 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
             )}
           </section>
 
-          <form
-            onSubmit={handleAddRent}
-            className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-800 bg-[#121827] p-4 sm:grid-cols-2 lg:grid-cols-7"
-          >
+        </>
+      )}
+
+      {mode === "viewer" && (
+        <div>
+          <h2 className="text-lg font-bold text-white">Transportation Rents</h2>
+          <p className="mt-1 text-xs text-slate-400">
+            Add new rents or pay, edit, and delete existing records below.
+          </p>
+        </div>
+      )}
+
+      <form
+        onSubmit={handleAddRent}
+        className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-800 bg-[#121827] p-4 sm:grid-cols-2 lg:grid-cols-7"
+      >
+        <h2 className="text-sm font-bold text-white sm:col-span-2 lg:col-span-7">
+          {mode === "admin" ? "Add Transportation Rent" : "Add a Transportation Rent"}
+        </h2>
             <label className="text-xs text-slate-400">
               Driver
               <select
@@ -725,9 +732,9 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
                 {vehicles.map((item) => (
                   <option key={item.id} value={item.id}>{item.name}</option>
                 ))}
-                <option value="__add_vehicle__">+ Add new vehicle…</option>
+                {mode === "admin" && <option value="__add_vehicle__">+ Add new vehicle…</option>}
               </select>
-              {isAddingVehicle && (
+              {mode === "admin" && isAddingVehicle && (
                 <div className="mt-2 flex gap-2">
                   <input
                     value={vehicleName}
@@ -806,9 +813,9 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
                 {tripDetails.map((item) => (
                   <option key={item.id} value={item.name}>{item.name}</option>
                 ))}
-                <option value="__add_trip_detail__">+ Add new trip detail…</option>
+                {mode === "admin" && <option value="__add_trip_detail__">+ Add new trip detail…</option>}
               </select>
-              {isAddingTripDetail && (
+              {mode === "admin" && isAddingTripDetail && (
                 <div className="mt-2 flex gap-2">
                   <input
                     value={newTripDetail}
@@ -835,8 +842,10 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
             >
               Add Rent
             </button>
-          </form>
+      </form>
 
+      {mode === "admin" && (
+        <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="rounded-xl border border-amber-800/60 bg-amber-950/30 p-4">
               <div className="text-xs font-semibold uppercase text-amber-300">Pending Rents</div>
@@ -848,29 +857,23 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
             </div>
           </div>
 
-          <div className="flex gap-2">
-            {(["pending", "paid"] as const).map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setActiveTab(tab)}
-                className={`rounded-lg px-4 py-2 text-xs font-bold capitalize ${
-                  activeTab === tab ? "bg-cyan-700 text-white" : "bg-[#121827] text-slate-400 hover:text-white"
-                }`}
-              >
-                {tab === "pending" ? `Pending (${pendingRents.length})` : `Payments (${paidRents.length})`}
-              </button>
-            ))}
-          </div>
         </>
       )}
 
-      {mode === "viewer" && (
-        <div>
-          <h2 className="text-lg font-bold text-white">Transportation Rents</h2>
-          <p className="mt-1 text-xs text-slate-400">Read-only view of pending and paid transportation charges.</p>
-        </div>
-      )}
+      <div className="flex gap-2">
+        {(["pending", "paid"] as const).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => setActiveTab(tab)}
+            className={`rounded-lg px-4 py-2 text-xs font-bold capitalize ${
+              activeTab === tab ? "bg-cyan-700 text-white" : "bg-[#121827] text-slate-400 hover:text-white"
+            }`}
+          >
+            {tab === "pending" ? `Pending (${pendingRents.length})` : `Payments (${paidRents.length})`}
+          </button>
+        ))}
+      </div>
 
       {error && (
         <div role="alert" className="rounded-lg border border-rose-800 bg-rose-950/50 p-3 text-sm text-rose-300">
@@ -882,7 +885,7 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
         <div>
           <h2 className="text-base font-bold text-white">Rent Details</h2>
           <p className="mt-1 text-xs text-slate-400">
-            Exporting {mode === "admin" ? activeTab : "all"} rent records with driver, vehicle, amount and company details.
+            Exporting {activeTab} rent records with driver, vehicle, amount and company details.
           </p>
         </div>
         <div className="flex gap-2">
@@ -977,7 +980,7 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
                         <th className="p-3">Paid To (PKR)</th>
                         <th className="p-3">Company / Details</th>
                         <th className="p-3">Status</th>
-                        {mode === "admin" && <th className="p-3 text-right">Actions</th>}
+                        <th className="p-3 text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800">
@@ -1002,38 +1005,36 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
                               </div>
                             )}
                           </td>
-                          {mode === "admin" && (
-                            <td className="p-3 text-right">
-                              <div className="flex justify-end gap-2">
-                                {activeTab === "pending" && (
-                                  <button
-                                    type="button"
-                                    onClick={() => void handlePay(rent.id)}
-                                    disabled={loading}
-                                    className="rounded-lg bg-emerald-700 px-3 py-1.5 font-bold text-white hover:bg-emerald-600 disabled:opacity-50"
-                                  >
-                                    Pay
-                                  </button>
-                                )}
+                          <td className="p-3 text-right">
+                            <div className="flex justify-end gap-2">
+                              {activeTab === "pending" && (
                                 <button
                                   type="button"
-                                  onClick={() => setEditingRent({ ...rent })}
+                                  onClick={() => void handlePay(rent.id)}
                                   disabled={loading}
-                                  className="rounded-lg bg-blue-700 px-3 py-1.5 font-bold text-white hover:bg-blue-600 disabled:opacity-50"
+                                  className="rounded-lg bg-emerald-700 px-3 py-1.5 font-bold text-white hover:bg-emerald-600 disabled:opacity-50"
                                 >
-                                  Edit
+                                  Pay
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void handleDeleteRent(rent)}
-                                  disabled={loading}
-                                  className="rounded-lg bg-rose-800 px-3 py-1.5 font-bold text-white hover:bg-rose-700 disabled:opacity-50"
-                                >
-                                  Delete
-                                </button>
-                              </div>
-                            </td>
-                          )}
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setEditingRent({ ...rent })}
+                                disabled={loading}
+                                className="rounded-lg bg-blue-700 px-3 py-1.5 font-bold text-white hover:bg-blue-600 disabled:opacity-50"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteRent(rent)}
+                                disabled={loading}
+                                className="rounded-lg bg-rose-800 px-3 py-1.5 font-bold text-white hover:bg-rose-700 disabled:opacity-50"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -1045,7 +1046,7 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
         </div>
       ) : (
         <div className="rounded-2xl border border-slate-800 bg-[#121827] p-6 text-center text-sm text-slate-500">
-          {loading ? "Loading transportation rents…" : mode === "viewer" ? "No transportation rents have been added." : activeTab === "pending" ? "No pending rents match these filters." : "No paid rents match these filters."}
+          {loading ? "Loading transportation rents…" : activeTab === "pending" ? "No pending rents match these filters." : "No paid rents match these filters."}
         </div>
       )}
 
@@ -1114,7 +1115,7 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
         </div>
       )}
 
-      {mode === "admin" && editingRent && (
+      {editingRent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <form
             onSubmit={handleUpdateRent}

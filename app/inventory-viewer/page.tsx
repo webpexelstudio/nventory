@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import Link from "next/link";
 import TransportationRentPanel from "@/components/TransportationRentPanel";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
@@ -191,7 +192,39 @@ export default function WarehouseStaffPortal() {
   };
 
   // Filtered lists
-  const filteredStockBalances = stockBalances
+  const stockBalancesWithBomComponents = [...stockBalances];
+  const bomBalanceKeys = new Set<string>();
+  for (const bom of productBomCapacities) {
+    const product = productsList.find((item) => item.id === bom.product_id);
+    const componentType = bom.component_type.trim();
+    if (!product || !componentType) continue;
+
+    const balanceKey = `${product.id}:${componentType.toLowerCase()}`;
+    if (bomBalanceKeys.has(balanceKey)) continue;
+    bomBalanceKeys.add(balanceKey);
+
+    const partyName = partiesList.find((party) => party.id === product.party_id)?.name ?? "General";
+    const hasStockRow = stockBalances.some((stock) =>
+      (stock.product_id === product.id ||
+        (!stock.product_id && stock.product_name?.toLowerCase() === product.product_name.toLowerCase())) &&
+      (stock.party_id === product.party_id ||
+        (!stock.party_id && stock.party_name.toLowerCase() === partyName.toLowerCase())) &&
+      stock.component_type.trim().toLowerCase() === componentType.toLowerCase()
+    );
+    if (hasStockRow) continue;
+
+    stockBalancesWithBomComponents.push({
+      id: `bom-zero-${balanceKey}`,
+      party_id: product.party_id,
+      party_name: partyName,
+      product_id: product.id,
+      product_name: product.product_name,
+      component_type: componentType,
+      quantity: 0,
+    });
+  }
+
+  const filteredStockBalances = stockBalancesWithBomComponents
     .filter((s) => {
       if (balPartyId && s.party_id !== balPartyId) return false;
       if (balProductId && s.product_id !== balProductId) return false;
@@ -284,12 +317,17 @@ export default function WarehouseStaffPortal() {
           </span>
           <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1">Stock Balance, IN & OUT Viewer</h1>
         </div>
-        <button
-          onClick={fetchWarehouseData}
-          className="w-full sm:w-auto px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold border border-slate-700 text-center"
-        >
-          🔄 Refresh Data
-        </button>
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+          <Link href="/production-sheet" className="w-full rounded-xl border border-cyan-700 bg-cyan-800 px-3 py-2 text-center text-xs font-bold text-white hover:bg-cyan-700 sm:w-auto">
+            Hourly Production Sheet
+          </Link>
+          <button
+            onClick={fetchWarehouseData}
+            className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-center text-xs font-bold text-slate-200 hover:bg-slate-700 sm:w-auto"
+          >
+            🔄 Refresh Data
+          </button>
+        </div>
       </div>
 
       <div className="max-w-7xl mx-auto space-y-4 sm:space-y-6">
@@ -330,7 +368,7 @@ export default function WarehouseStaffPortal() {
               activeTab === "transportation_rent" ? "bg-emerald-600 text-white shadow-lg" : "bg-[#121827] text-slate-400 hover:text-white"
             }`}
           >
-            🚚 Transportation Rent (View)
+            🚚 Transportation Rent
           </button>
         </div>
 

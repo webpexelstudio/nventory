@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
@@ -1030,9 +1029,6 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
           <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1">Material Requisition & Weight Verification</h1>
         </div>
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-          <span className="w-full rounded-xl border border-slate-700 bg-slate-800/60 px-3 py-2 text-center text-xs font-bold text-slate-400 sm:w-auto">
-            Madam Salma — Hourly Production (Temporarily Disabled)
-          </span>
           <span className="w-full rounded-xl border border-slate-700 bg-slate-800/60 px-3 py-2 text-center text-xs font-bold text-slate-400 sm:w-auto">
             ↩ Returns / Damage — Coming Soon
           </span>

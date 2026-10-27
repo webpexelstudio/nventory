@@ -1098,7 +1098,39 @@ export default function WarehousePortalPage() {
     return true;
   });
 
-  const filteredStockBalances = stockBalances
+  const stockBalancesWithBomComponents = [...stockBalances];
+  const bomBalanceKeys = new Set<string>();
+  for (const bom of productBomCapacities) {
+    const product = productsList.find((item) => item.id === bom.product_id);
+    const componentType = bom.component_type.trim();
+    if (!product || !componentType) continue;
+
+    const balanceKey = `${product.id}:${componentType.toLowerCase()}`;
+    if (bomBalanceKeys.has(balanceKey)) continue;
+    bomBalanceKeys.add(balanceKey);
+
+    const partyName = partiesList.find((party) => party.id === product.party_id)?.name ?? "General Party";
+    const hasStockRow = stockBalances.some((stock) =>
+      (stock.product_id === product.id ||
+        (!stock.product_id && stock.product_name?.toLowerCase() === product.product_name.toLowerCase())) &&
+      (stock.party_id === product.party_id ||
+        (!stock.party_id && stock.party_name.toLowerCase() === partyName.toLowerCase())) &&
+      stock.component_type.trim().toLowerCase() === componentType.toLowerCase()
+    );
+    if (hasStockRow) continue;
+
+    stockBalancesWithBomComponents.push({
+      id: `bom-zero-${balanceKey}`,
+      party_id: product.party_id,
+      party_name: partyName,
+      product_id: product.id,
+      product_name: product.product_name,
+      component_type: componentType,
+      quantity: 0,
+    });
+  }
+
+  const filteredStockBalances = stockBalancesWithBomComponents
     .filter((s) => {
       if (balPartyId && s.party_id !== balPartyId && s.party_name !== partiesList.find(p => p.id === balPartyId)?.name) return false;
       if (balProductId && s.product_id !== balProductId && s.product_name !== productsList.find(p => p.id === balProductId)?.product_name) return false;

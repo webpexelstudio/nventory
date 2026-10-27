@@ -1414,7 +1414,43 @@ export default function AdminPage() {
         log.product_name?.toLowerCase() === stock.product_name?.toLowerCase() &&
         log.component_type?.toLowerCase() === stock.component_type?.toLowerCase()
     );
-  const filteredInventoryList = inventoryList
+  const getInventoryBalancesWithBomComponents = (stockRows: any[], partyId?: string) => {
+    const balances = [...stockRows];
+    const bomBalanceKeys = new Set<string>();
+    for (const bom of bomViewList) {
+      const product = productsList.find((item) => item.id === bom.product_id);
+      const componentType = bom.component_type.trim();
+      if (!product || !componentType || (partyId && product.party_id !== partyId)) continue;
+
+      const balanceKey = `${product.id}:${componentType.toLowerCase()}`;
+      if (bomBalanceKeys.has(balanceKey)) continue;
+      bomBalanceKeys.add(balanceKey);
+
+      const partyName = product.parties?.name ??
+        partiesList.find((party) => party.id === product.party_id)?.name ??
+        "General";
+      const hasStockRow = stockRows.some((stock) =>
+        (stock.product_id === product.id ||
+          (!stock.product_id && stock.product_name?.toLowerCase() === product.product_name.toLowerCase())) &&
+        (stock.party_id === product.party_id ||
+          (!stock.party_id && stock.party_name?.toLowerCase() === partyName.toLowerCase())) &&
+        stock.component_type?.trim().toLowerCase() === componentType.toLowerCase()
+      );
+      if (hasStockRow) continue;
+
+      balances.push({
+        id: `bom-zero-${balanceKey}`,
+        party_id: product.party_id,
+        party_name: partyName,
+        product_id: product.id,
+        product_name: product.product_name,
+        component_type: componentType,
+        quantity: 0,
+      });
+    }
+    return balances;
+  };
+  const filteredInventoryList = getInventoryBalancesWithBomComponents(inventoryList)
     .filter((stock) => {
       if (!filterByDateAndText(inventoryFilters, undefined, stock.party_name, stock.product_name)) return false;
       if (!inventoryFilters.startDate && !inventoryFilters.endDate) return true;
@@ -1435,7 +1471,10 @@ export default function AdminPage() {
       (first.party_name || "General").localeCompare(second.party_name || "General", undefined, { sensitivity: "base" }) ||
       (first.product_name || "General").localeCompare(second.product_name || "General", undefined, { sensitivity: "base" })
     );
-  const sortedPartyInventoryStock = [...partyInventoryStock].sort((first, second) =>
+  const sortedPartyInventoryStock = getInventoryBalancesWithBomComponents(
+    partyInventoryStock,
+    selectedPartyForView
+  ).sort((first, second) =>
     (first.product_name || "General").localeCompare(second.product_name || "General", undefined, { sensitivity: "base" })
   );
   const masterCartonWarehouseLogs = warehouseLogs.filter(
@@ -1510,9 +1549,12 @@ export default function AdminPage() {
         >
           Transportation Rent & Payments
         </Link>
-        <span className="rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-2 text-xs font-bold text-slate-400">
-          Madam Salma — Hourly Production (Temporarily Disabled)
-        </span>
+        <Link
+          href="/production-sheet"
+          className="rounded-lg border border-emerald-700 bg-emerald-950/50 px-4 py-2 text-xs font-bold text-emerald-300 hover:bg-emerald-900/60"
+        >
+          Hourly Production Sheet
+        </Link>
         <span className="rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-2 text-xs font-bold text-slate-400">
           Filling Returns & Damage — Coming Soon
         </span>
