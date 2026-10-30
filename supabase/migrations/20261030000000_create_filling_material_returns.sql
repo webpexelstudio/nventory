@@ -44,7 +44,7 @@ BEGIN
   SELECT *
   INTO material_return
   FROM public.filling_material_returns
-  WHERE id = p_return_id
+  WHERE id::text = p_return_id::text
   FOR UPDATE;
 
   IF NOT FOUND THEN
@@ -129,7 +129,7 @@ BEGIN
   UPDATE public.filling_material_returns
   SET status = 'RECEIVED_BY_WAREHOUSE',
       received_at = now()
-  WHERE id = p_return_id;
+  WHERE id::text = p_return_id::text;
 END;
 $$;
 

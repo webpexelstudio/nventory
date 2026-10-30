@@ -742,12 +742,14 @@ export default function FillingInchargePage() {
     }
 
     setLoading(true);
+    let saveStage = "preparing filling request";
     try {
       let savedCartonCount = cartonCount;
       if (
         cartonCount !== null &&
         (!masterCartonSettingExists || cartonPcs !== null)
       ) {
+        saveStage = "saving master-carton settings";
         const savedSetting = await persistMasterCartonSetting(selectedProductId, cartonCount, cartonPcs);
         savedCartonCount = savedSetting.carton_count;
         setMasterCartonCount(String(savedSetting.carton_count));
@@ -801,6 +803,7 @@ export default function FillingInchargePage() {
         components: generatedComponents,
       };
 
+      saveStage = "inserting filling request";
       let res = await supabase.from("filling_requests").insert([payload]);
 
       if (
@@ -840,7 +843,7 @@ export default function FillingInchargePage() {
       setProductPackUnit("ML");
       setBatchNo("BATCH-");
     } catch (err) {
-      alert("Database Save Error: " + getMasterCartonErrorMessage(err, "Could not save the filling request."));
+      alert(`Database Save Error (${saveStage}): ${getMasterCartonErrorMessage(err, "Could not save the filling request.")}`);
     } finally {
       setLoading(false);
     }

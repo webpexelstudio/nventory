@@ -18,10 +18,13 @@ interface ProductionOption {
   id: string;
   option_type: OptionType;
   name: string;
+  assigned_incharge?: string | null;
 }
 
 interface ProductionRow {
   incharge_name: string;
+  room_number?: number | null;
+  party_name?: string;
   product_name: string;
   batch_no: string;
   retail_price: string;
@@ -44,6 +47,23 @@ interface ProductionSheet {
   created_at: string;
   updated_at: string;
 }
+
+interface FillingPurchaseOrder {
+  room_number: number | null;
+  party_name: string;
+  product_name: string;
+  batch_no: string | null;
+  retail_price: number | null;
+  mfg_date: string | null;
+  exp_date: string | null;
+  pack_size: number | null;
+  pack_unit: string | null;
+  master_carton_count: number | null;
+  master_carton_pcs: number | null;
+}
+
+const normalizeRoomOptionName = (name: string) =>
+  name.trim().toLocaleLowerCase().replace(/[^a-z0-9]/g, "");
 
 const emptyRow = (): ProductionRow => ({
   incharge_name: "",
@@ -101,7 +121,12 @@ const reportShareText = (report: ProductionSheet) => {
       .filter(Boolean)
       .join(" | ");
     const cartons = rowCartons(row);
-    return `${index + 1}. ${row.product_name || "Product"}${row.batch_no ? ` (Batch ${row.batch_no})` : ""} - ${rowTotal(row).toLocaleString()} pcs${cartons === null ? "" : ` · ${formatCartons(cartons)} cartons`}${hourly ? `\n   ${hourly}` : ""}`;
+    const details = [
+      row.room_number ? `Room ${row.room_number}` : "",
+      row.party_name || "",
+      row.incharge_name || "",
+    ].filter(Boolean).join(" · ");
+    return `${index + 1}. ${row.product_name || "Product"}${row.batch_no ? ` (Batch ${row.batch_no})` : ""}${details ? ` · ${details}` : ""} - ${rowTotal(row).toLocaleString()} pcs${cartons === null ? "" : ` · ${formatCartons(cartons)} cartons`}${hourly ? `\n   ${hourly}` : ""}`;
   });
 
   return [
@@ -109,7 +134,7 @@ const reportShareText = (report: ProductionSheet) => {
     `Date: ${report.report_date} (${formatDay(report.report_date)})`,
     `Room / floor: ${report.room_name}`,
     `Packing incharge: ${report.packing_incharge}`,
-    `Production incharge: ${report.production_incharge}`,
+    `Filling incharge: ${report.production_incharge}`,
     `Daily target: ${Number(report.daily_target || 0).toLocaleString()} pcs`,
     `Total production: ${reportTotal(report).toLocaleString()} pcs`,
     `Total cartons: ${formatCartons(reportCartons(report))}`,
@@ -128,6 +153,9 @@ export default function ProductionSheetPage() {
   const [reports, setReports] = useState<ProductionSheet[]>([]);
   const [options, setOptions] = useState<ProductionOption[]>([]);
   const [reportDate, setReportDate] = useState(today());
+  const [fillingPODate, setFillingPODate] = useState("");
+  const [fillingPOCount, setFillingPOCount] = useState<number | null>(null);
+  const [loadingFillingPOs, setLoadingFillingPOs] = useState(false);
   const [roomName, setRoomName] = useState("");
   const [packingIncharge, setPackingIncharge] = useState("");
   const [productionIncharge, setProductionIncharge] = useState("");
@@ -141,6 +169,7 @@ export default function ProductionSheetPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const fillingPOLookupSequence = React.useRef(0);
 
   const totalProduction = useMemo(
     () => rows.reduce((total, row) => total + rowTotal(row), 0),
@@ -212,8 +241,12 @@ export default function ProductionSheetPage() {
   }, [viewingReport]);
 
   const clearForm = () => {
+    fillingPOLookupSequence.current += 1;
     setEditingId(null);
     setReportDate(today());
+    setFillingPODate("");
+    setFillingPOCount(null);
+    setLoadingFillingPOs(false);
     setRoomName("");
     setPackingIncharge("");
     setProductionIncharge("");
@@ -225,6 +258,87 @@ export default function ProductionSheetPage() {
     setRows((current) => current.map((row, rowIndex) =>
       rowIndex === index ? { ...row, ...update } : row,
     ));
+  };
+
+  const updateProductionIncharge = (incharge: string) => {
+    setProductionIncharge(incharge);
+    setRows((current) => current.map((row) =>
+      row.room_number == null ? { ...row, incharge_name: incharge } : row,
+    ));
+  };
+
+  const getRoomIncharge = (roomNumber: number | null) => {
+    if (roomNumber == null) return "";
+    const roomNames = new Set([
+      `room${roomNumber}`,
+      String(roomNumber),
+    ]);
+    return options.find((option) =>
+      option.option_type === "room" &&
+      roomNames.has(normalizeRoomOptionName(option.name)),
+    )?.assigned_incharge ?? "";
+  };
+
+  const handleRoomChange = (room: string) => {
+    setRoomName(room);
+    const assignedIncharge = options.find((option) =>
+      option.option_type === "room" &&
+      option.name.trim().toLocaleLowerCase() === room.trim().toLocaleLowerCase(),
+    )?.assigned_incharge ?? "";
+    setProductionIncharge(assignedIncharge);
+    setRows((current) => current.map((row) =>
+      row.room_number == null ? { ...row, incharge_name: assignedIncharge } : row,
+    ));
+  };
+
+  const loadFillingPOsForDate = async (date: string) => {
+    const lookupSequence = ++fillingPOLookupSequence.current;
+    setFillingPODate(date);
+    setFillingPOCount(null);
+    if (!date) {
+      setLoadingFillingPOs(false);
+      return;
+    }
+
+    setLoadingFillingPOs(true);
+    setError(null);
+    try {
+      const { data, error: fillingPOError } = await supabase
+        .from("filling_requests")
+        .select("room_number, party_name, product_name, batch_no, retail_price, mfg_date, exp_date, pack_size, pack_unit, master_carton_count, master_carton_pcs")
+        .eq("required_date", date)
+        .order("created_at", { ascending: true });
+
+      if (fillingPOError) throw fillingPOError;
+      if (lookupSequence !== fillingPOLookupSequence.current) return;
+
+      const fillingPOs = (data ?? []) as FillingPurchaseOrder[];
+      setRows(fillingPOs.length > 0
+        ? fillingPOs.map((order) => ({
+          ...emptyRow(),
+          incharge_name: getRoomIncharge(order.room_number) || (order.room_number == null ? productionIncharge : ""),
+          room_number: order.room_number,
+          party_name: order.party_name,
+          product_name: [
+            order.product_name,
+            order.pack_size ? `${order.pack_size} ${order.pack_unit || "ML"}` : "",
+          ].filter(Boolean).join(" "),
+          batch_no: order.batch_no ?? "",
+          retail_price: order.retail_price == null ? "" : String(order.retail_price),
+          mfg_date: order.mfg_date ?? "",
+          exp_date: order.exp_date ?? "",
+          carton_no: order.master_carton_count == null ? "" : String(order.master_carton_count),
+          pcs_per_carton: order.master_carton_pcs == null ? "" : String(order.master_carton_pcs),
+        }))
+        : [{ ...emptyRow(), incharge_name: productionIncharge }]);
+      setFillingPOCount(fillingPOs.length);
+    } catch (fillingPOError) {
+      if (lookupSequence === fillingPOLookupSequence.current) {
+        setError(`Filling POs for ${date} could not be loaded: ${fillingPOError instanceof Error ? fillingPOError.message : String(fillingPOError)}`);
+      }
+    } finally {
+      if (lookupSequence === fillingPOLookupSequence.current) setLoadingFillingPOs(false);
+    }
   };
 
   const editReport = (report: ProductionSheet) => {
@@ -303,6 +417,17 @@ export default function ProductionSheetPage() {
 
   const deleteOption = async (option: ProductionOption) => {
     if (!window.confirm(`Remove ${option.name} from the options list? Existing reports will be kept.`)) return;
+    if (option.option_type === "incharge") {
+      const { error: mappingError } = await supabase
+        .from("production_sheet_options")
+        .update({ assigned_incharge: null })
+        .eq("option_type", "room")
+        .eq("assigned_incharge", option.name);
+      if (mappingError) {
+        setError(`Room assignments could not be updated: ${mappingError.message}`);
+        return;
+      }
+    }
     const { error: deleteError } = await supabase
       .from("production_sheet_options")
       .delete()
@@ -312,6 +437,41 @@ export default function ProductionSheetPage() {
       return;
     }
     await loadData();
+  };
+
+  const saveRoomIncharge = async (roomOption: ProductionOption, incharge: string) => {
+    setError(null);
+    const { error: updateError } = await supabase
+      .from("production_sheet_options")
+      .update({ assigned_incharge: incharge || null })
+      .eq("id", roomOption.id)
+      .eq("option_type", "room");
+    if (updateError) {
+      setError(`Filling incharge for ${roomOption.name} could not be saved: ${updateError.message}`);
+      return;
+    }
+
+    setOptions((current) => current.map((option) =>
+      option.id === roomOption.id
+        ? { ...option, assigned_incharge: incharge || null }
+        : option,
+    ));
+    if (roomName.trim().toLocaleLowerCase() === roomOption.name.trim().toLocaleLowerCase()) {
+      setProductionIncharge(incharge);
+    }
+    const normalizedRoomName = normalizeRoomOptionName(roomOption.name);
+    const assignedRoomNumber = normalizedRoomName.match(/^room([1-6])$/)?.[1]
+      ?? (/^[1-6]$/.test(normalizedRoomName) ? normalizedRoomName : null);
+    if (assignedRoomNumber) {
+      setRows((current) => current.map((row) =>
+        row.room_number === Number(assignedRoomNumber)
+          ? { ...row, incharge_name: incharge }
+          : row,
+      ));
+    }
+    setNotice(incharge
+      ? `${incharge} assigned to ${roomOption.name}.`
+      : `Filling incharge assignment removed from ${roomOption.name}.`);
   };
 
   const hourlyTotals = HOUR_SLOTS.map((hour) =>
@@ -326,6 +486,8 @@ export default function ProductionSheetPage() {
     const body = (report.rows ?? []).map((row, index) => [
       index + 1,
       row.incharge_name || "-",
+      row.room_number ? `Room ${row.room_number}` : "-",
+      row.party_name || "-",
       row.product_name || "-",
       row.batch_no || "-",
       row.retail_price || "-",
@@ -350,14 +512,14 @@ export default function ProductionSheetPage() {
     doc.setFontSize(9);
     doc.text(`${report.room_name}  |  ${report.report_date} (${formatDay(report.report_date)})`, 14, 21);
     doc.text(
-      `Packing: ${report.packing_incharge}  |  Production: ${report.production_incharge}  |  Target: ${Number(report.daily_target || 0).toLocaleString()} pcs  |  Total: ${total.toLocaleString()} pcs`,
+      `Packing: ${report.packing_incharge}  |  Filling: ${report.production_incharge}  |  Target: ${Number(report.daily_target || 0).toLocaleString()} pcs  |  Total: ${total.toLocaleString()} pcs`,
       14,
       27,
     );
     autoTable(doc, {
       startY: 37,
       head: [[
-        "#", "Incharge", "Product", "Batch", "Retail", "MFG", "EXP", "C/No",
+        "#", "Incharge", "Room", "Party", "Product", "Batch", "Retail", "MFG", "EXP", "C/No",
         "P/Carton", "P/C weight", ...hourlyHeaders, "Total pcs", "Cartons made",
       ]],
       body,
@@ -365,7 +527,7 @@ export default function ProductionSheetPage() {
       styles: { fontSize: 5.5, cellPadding: 1.2, overflow: "linebreak" },
       headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontSize: 5.5 },
       alternateRowStyles: { fillColor: [241, 245, 249] },
-      columnStyles: { 0: { cellWidth: 6 }, 2: { cellWidth: 24 }, 3: { cellWidth: 15 } },
+      columnStyles: { 0: { cellWidth: 6 }, 4: { cellWidth: 24 }, 5: { cellWidth: 15 } },
     });
 
     const fileName = `production_report_${report.report_date}_${report.room_name}`
@@ -428,18 +590,24 @@ export default function ProductionSheetPage() {
             <label className="text-xs font-semibold text-slate-300">Date
               <input type="date" required value={reportDate} onChange={(event) => setReportDate(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-700 bg-[#0b0f19] p-2 text-sm text-white" />
             </label>
+            <label className="text-xs font-semibold text-slate-300">Filling PO date
+              <input type="date" value={fillingPODate} onChange={(event) => void loadFillingPOsForDate(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-700 bg-[#0b0f19] p-2 text-sm text-white" />
+            </label>
             <label className="text-xs font-semibold text-slate-300">Day
               <input readOnly value={formatDay(reportDate)} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 p-2 text-sm text-slate-300" />
             </label>
             <label className="text-xs font-semibold text-slate-300">Room / floor
-              <input list="production-rooms" required value={roomName} onChange={(event) => setRoomName(event.target.value)} placeholder="Packing Ground Floor" className="mt-1 w-full rounded-lg border border-slate-700 bg-[#0b0f19] p-2 text-sm text-white" />
+              <input list="production-rooms" required value={roomName} onChange={(event) => handleRoomChange(event.target.value)} placeholder="Packing Ground Floor" className="mt-1 w-full rounded-lg border border-slate-700 bg-[#0b0f19] p-2 text-sm text-white" />
               <datalist id="production-rooms">{options.filter((option) => option.option_type === "room").map((option) => <option key={option.id} value={option.name} />)}</datalist>
             </label>
             <label className="text-xs font-semibold text-slate-300">Packing incharge
               <input list="production-incharges" required value={packingIncharge} onChange={(event) => setPackingIncharge(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-700 bg-[#0b0f19] p-2 text-sm text-white" />
             </label>
-            <label className="text-xs font-semibold text-slate-300">Production incharge
-              <input list="production-incharges" required value={productionIncharge} onChange={(event) => setProductionIncharge(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-700 bg-[#0b0f19] p-2 text-sm text-white" />
+            <label className="text-xs font-semibold text-slate-300">Filling incharge
+              <input list="production-incharges" required value={productionIncharge} onChange={(event) => {
+                const incharge = event.target.value;
+                updateProductionIncharge(incharge);
+              }} className="mt-1 w-full rounded-lg border border-slate-700 bg-[#0b0f19] p-2 text-sm text-white" />
             </label>
             <datalist id="production-incharges">{options.filter((option) => option.option_type === "incharge").map((option) => <option key={option.id} value={option.name} />)}</datalist>
             <label className="text-xs font-semibold text-slate-300">Daily target (pcs)
@@ -450,16 +618,22 @@ export default function ProductionSheetPage() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="font-bold">Product rows</h3>
-              <p className="text-xs text-slate-400">Hourly cells accept quantities or notes such as STICKER / -; numeric values are totaled. Cartons made = total pcs ÷ pcs per carton.</p>
+              <p className="text-xs text-slate-400">
+                {loadingFillingPOs
+                  ? `Loading Filling POs for ${fillingPODate}…`
+                  : fillingPOCount !== null
+                    ? `${fillingPOCount} Filling PO${fillingPOCount === 1 ? "" : "s"} loaded for ${fillingPODate}.`
+                    : "Choose a Filling PO date to load each request as its own product row. Room-specific filling incharges are filled from the room assignments below."} Hourly cells accept quantities or notes such as STICKER / -; numeric values are totaled. Cartons made = total pcs ÷ pcs per carton.
+              </p>
             </div>
-            <button type="button" onClick={() => setRows((current) => [...current, emptyRow()])} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold hover:bg-emerald-600">+ Add product row</button>
+            <button type="button" onClick={() => setRows((current) => [...current, { ...emptyRow(), incharge_name: productionIncharge }])} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold hover:bg-emerald-600">+ Add product row</button>
           </div>
 
           <div className="overflow-x-auto rounded-lg border border-slate-700">
             <table className="min-w-[1900px] border-collapse text-left text-xs">
               <thead className="bg-slate-800 text-slate-200">
                 <tr>
-                  <th className="p-2">#</th><th className="p-2">Incharge name</th><th className="p-2">Product name & size</th><th className="p-2">Batch no</th><th className="p-2">Retail price</th><th className="p-2">MFG</th><th className="p-2">EXP</th><th className="p-2">C/No</th><th className="p-2">P/Carton</th><th className="p-2">P/C weight</th>
+                  <th className="p-2">#</th><th className="p-2">Filling incharge</th><th className="p-2">Room</th><th className="p-2">Party</th><th className="p-2">Product name & size</th><th className="p-2">Batch no</th><th className="p-2">Retail price</th><th className="p-2">MFG</th><th className="p-2">EXP</th><th className="p-2">C/No</th><th className="p-2">P/Carton</th><th className="p-2">P/C weight</th>
                   {HOUR_SLOTS.map((hour) => <th key={hour} className={`min-w-20 p-2 text-center ${hour === "14:00" ? "bg-blue-900/70" : ""}`}>{hour === "14:00" ? "2 PM BREAK" : `${Number(hour.slice(0, 2)) % 12 || 12}:00 ${Number(hour.slice(0, 2)) < 12 ? "AM" : "PM"}`}</th>)}
                   <th className="p-2 text-right">Total pcs</th><th className="p-2 text-right">Cartons made</th><th className="p-2">Action</th>
                 </tr>
@@ -468,7 +642,21 @@ export default function ProductionSheetPage() {
                 {rows.map((row, index) => (
                   <tr key={index} className="border-t border-slate-800 align-top">
                     <td className="p-2 text-slate-400">{index + 1}</td>
-                    <td className="p-1"><input list="production-incharges" aria-label={`Row ${index + 1} incharge`} value={row.incharge_name} onChange={(event) => updateRow(index, { incharge_name: event.target.value })} className="w-28 rounded border border-slate-700 bg-[#0b0f19] p-2" /></td>
+                    <td className="p-1">
+                      <select
+                        aria-label={`Row ${index + 1} filling incharge`}
+                        value={row.incharge_name}
+                        onChange={(event) => updateRow(index, { incharge_name: event.target.value })}
+                        className="w-32 rounded border border-slate-700 bg-[#0b0f19] p-2"
+                      >
+                        <option value="">-- Select --</option>
+                        {options.filter((option) => option.option_type === "incharge").map((option) => (
+                          <option key={option.id} value={option.name}>{option.name}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="p-2">{row.room_number ? `Room ${row.room_number}` : "—"}</td>
+                    <td className="p-2">{row.party_name || "—"}</td>
                     <td className="p-1"><input required aria-label={`Row ${index + 1} product name`} value={row.product_name} onChange={(event) => updateRow(index, { product_name: event.target.value })} className="w-44 rounded border border-slate-700 bg-[#0b0f19] p-2" /></td>
                     <td className="p-1"><input value={row.batch_no} onChange={(event) => updateRow(index, { batch_no: event.target.value })} className="w-24 rounded border border-slate-700 bg-[#0b0f19] p-2" /></td>
                     <td className="p-1"><input value={row.retail_price} onChange={(event) => updateRow(index, { retail_price: event.target.value })} className="w-24 rounded border border-slate-700 bg-[#0b0f19] p-2" /></td>
@@ -490,7 +678,7 @@ export default function ProductionSheetPage() {
                   </tr>
                 ))}
                 <tr className="border-t border-slate-600 bg-blue-950/70 font-bold">
-                  <td colSpan={10} className="p-2 text-right">HOURLY TOTAL</td>
+                  <td colSpan={12} className="p-2 text-right">HOURLY TOTAL</td>
                   {hourlyTotals.map((total, index) => <td key={HOUR_SLOTS[index]} className="p-2 text-right">{HOUR_SLOTS[index] === "14:00" ? "BREAK" : total.toLocaleString()}</td>)}
                   <td className="p-2 text-right text-amber-300">{totalProduction.toLocaleString()}</td>
                   <td className="p-2 text-right text-cyan-300">{formatCartons(rows.reduce((total, row) => total + (rowCartons(row) ?? 0), 0))}</td><td />
@@ -515,7 +703,7 @@ export default function ProductionSheetPage() {
           {loading ? <p className="text-sm text-slate-400">Loading production records...</p> : reports.length === 0 ? <p className="text-sm text-slate-400">No production sheets saved yet.</p> : (
             <div className="overflow-x-auto">
               <table className="w-full min-w-[720px] text-left text-sm">
-                <thead className="text-xs uppercase text-slate-400"><tr><th className="p-2">Date</th><th className="p-2">Day</th><th className="p-2">Room / floor</th><th className="p-2">Packing incharge</th><th className="p-2">Production incharge</th><th className="p-2 text-right">Total pcs</th><th className="p-2">Actions</th></tr></thead>
+                <thead className="text-xs uppercase text-slate-400"><tr><th className="p-2">Date</th><th className="p-2">Day</th><th className="p-2">Room / floor</th><th className="p-2">Packing incharge</th><th className="p-2">Filling incharge</th><th className="p-2 text-right">Total pcs</th><th className="p-2">Actions</th></tr></thead>
                 <tbody>{reports.map((report) => {
                   const total = reportTotal(report);
                   return <tr key={report.id} className="border-t border-slate-800"><td className="p-2">{report.report_date}</td><td className="p-2">{formatDay(report.report_date)}</td><td className="p-2">{report.room_name}</td><td className="p-2">{report.packing_incharge}</td><td className="p-2">{report.production_incharge}</td><td className="p-2 text-right font-bold text-amber-300">{total.toLocaleString()}</td><td className="whitespace-nowrap p-2"><button type="button" onClick={() => setViewingReport(report)} className="mr-2 inline-flex items-center gap-1 rounded bg-slate-700 px-3 py-1.5 text-xs font-bold hover:bg-slate-600"><Eye size={14} />View</button><button type="button" onClick={() => void shareReport(report)} className="mr-2 inline-flex items-center gap-1 rounded bg-emerald-800 px-3 py-1.5 text-xs font-bold hover:bg-emerald-700"><Share2 size={14} />Share</button><button type="button" onClick={() => editReport(report)} className="mr-2 rounded bg-cyan-800 px-3 py-1.5 text-xs font-bold">Edit</button><button type="button" onClick={() => void deleteReport(report)} className="rounded bg-rose-900 px-3 py-1.5 text-xs font-bold">Delete</button></td></tr>;
@@ -554,7 +742,7 @@ export default function ProductionSheetPage() {
                   <div className="rounded-xl border border-white/10 bg-white/5 p-3"><p className="text-xs text-slate-400">Cartons (equivalent)</p><p className="mt-1 text-xl font-extrabold text-cyan-300">{formatCartons(reportCartons(viewingReport))}</p></div>
                   <div className="rounded-xl border border-white/10 bg-white/5 p-3"><p className="text-xs text-slate-400">Daily target</p><p className="mt-1 text-xl font-extrabold text-white">{Number(viewingReport.daily_target || 0).toLocaleString()} <span className="text-xs font-semibold">pcs</span></p></div>
                   <div className="rounded-xl border border-white/10 bg-white/5 p-3"><p className="text-xs text-slate-400">Packing incharge</p><p className="mt-1 truncate font-bold text-white">{viewingReport.packing_incharge}</p></div>
-                  <div className="rounded-xl border border-white/10 bg-white/5 p-3"><p className="text-xs text-slate-400">Production incharge</p><p className="mt-1 truncate font-bold text-white">{viewingReport.production_incharge}</p></div>
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3"><p className="text-xs text-slate-400">Filling incharge</p><p className="mt-1 truncate font-bold text-white">{viewingReport.production_incharge}</p></div>
                 </div>
                 <div className="mt-5 flex flex-wrap gap-2">
                   <button type="button" onClick={() => void shareReport(viewingReport)} className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-emerald-500"><Share2 size={16} />Share report</button>
@@ -570,7 +758,7 @@ export default function ProductionSheetPage() {
                   <table className="w-full min-w-[1500px] border-collapse text-left text-xs">
                     <thead className="bg-slate-800 text-slate-300">
                       <tr>
-                        <th className="p-2">#</th><th className="p-2">Incharge</th><th className="p-2">Product / size</th><th className="p-2">Batch</th><th className="p-2">Retail</th><th className="p-2">MFG</th><th className="p-2">EXP</th><th className="p-2">C/No</th><th className="p-2">P/Carton</th><th className="p-2">P/C weight</th>
+                        <th className="p-2">#</th><th className="p-2">Incharge</th><th className="p-2">Room</th><th className="p-2">Party</th><th className="p-2">Product / size</th><th className="p-2">Batch</th><th className="p-2">Retail</th><th className="p-2">MFG</th><th className="p-2">EXP</th><th className="p-2">C/No</th><th className="p-2">P/Carton</th><th className="p-2">P/C weight</th>
                         {HOUR_SLOTS.map((hour) => <th key={hour} className={`min-w-20 p-2 text-center ${hour === "14:00" ? "bg-blue-900/70" : ""}`}>{hour === "14:00" ? "BREAK" : hour}</th>)}
                         <th className="p-2 text-right">Total pcs</th><th className="p-2 text-right">Cartons made</th>
                       </tr>
@@ -578,12 +766,12 @@ export default function ProductionSheetPage() {
                     <tbody>
                       {(viewingReport.rows ?? []).map((row, index) => (
                         <tr key={`${row.product_name}-${index}`} className="border-t border-slate-800 text-slate-200">
-                          <td className="p-2 text-slate-500">{index + 1}</td><td className="p-2">{row.incharge_name || "—"}</td><td className="p-2 font-semibold text-white">{row.product_name || "—"}</td><td className="p-2">{row.batch_no || "—"}</td><td className="p-2">{row.retail_price || "—"}</td><td className="p-2">{row.mfg_date || "—"}</td><td className="p-2">{row.exp_date || "—"}</td><td className="p-2">{row.carton_no || "—"}</td><td className="p-2">{row.pcs_per_carton || "—"}</td><td className="p-2">{row.pcs_weight || "—"}</td>
+                          <td className="p-2 text-slate-500">{index + 1}</td><td className="p-2">{row.incharge_name || "—"}</td><td className="p-2">{row.room_number ? `Room ${row.room_number}` : "—"}</td><td className="p-2">{row.party_name || "—"}</td><td className="p-2 font-semibold text-white">{row.product_name || "—"}</td><td className="p-2">{row.batch_no || "—"}</td><td className="p-2">{row.retail_price || "—"}</td><td className="p-2">{row.mfg_date || "—"}</td><td className="p-2">{row.exp_date || "—"}</td><td className="p-2">{row.carton_no || "—"}</td><td className="p-2">{row.pcs_per_carton || "—"}</td><td className="p-2">{row.pcs_weight || "—"}</td>
                           {HOUR_SLOTS.map((hour) => <td key={hour} className={`p-2 text-center ${hour === "14:00" ? "bg-blue-950/40 text-slate-500" : ""}`}>{hour === "14:00" ? "—" : row.hourly?.[hour] || "—"}</td>)}
                           <td className="p-2 text-right font-bold text-amber-300">{rowTotal(row).toLocaleString()}</td><td className="p-2 text-right font-bold text-cyan-300">{rowCartons(row) === null ? "—" : formatCartons(rowCartons(row) ?? 0)}</td>
                         </tr>
                       ))}
-                      {(viewingReport.rows ?? []).length === 0 && <tr><td colSpan={24} className="p-8 text-center text-slate-400">No product rows in this report.</td></tr>}
+                      {(viewingReport.rows ?? []).length === 0 && <tr><td colSpan={26} className="p-8 text-center text-slate-400">No product rows in this report.</td></tr>}
                     </tbody>
                   </table>
                 </div>
@@ -593,8 +781,8 @@ export default function ProductionSheetPage() {
         )}
 
         <section className="space-y-3 rounded-xl border border-slate-800 bg-[#121827] p-4 sm:p-6">
-          <h2 className="text-lg font-bold">Manage room and incharge options</h2>
-          <p className="text-xs text-slate-400">Options are suggestions; removing one does not change saved reports.</p>
+          <h2 className="text-lg font-bold">Manage room and filling incharge options</h2>
+          <p className="text-xs text-slate-400">Assign an incharge to each room; selecting that room fills the incharge name automatically. For Filling PO rows, use room names like Room 1 through Room 6 to match their room number.</p>
           <form onSubmit={addOption} className="flex flex-col gap-2 sm:flex-row">
             <select value={newOptionType} onChange={(event) => setNewOptionType(event.target.value as OptionType)} className="rounded-lg border border-slate-700 bg-[#0b0f19] p-2 text-sm">
               <option value="room">Room / floor</option><option value="incharge">Incharge</option>
@@ -605,6 +793,27 @@ export default function ProductionSheetPage() {
           <div className="flex flex-wrap gap-2">
             {options.map((option) => <span key={option.id} className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs">{optionLabel[option.option_type]}: {option.name}<button type="button" onClick={() => void deleteOption(option)} aria-label={`Remove ${option.name}`} className="font-bold text-rose-300">×</button></span>)}
             {options.length === 0 && <p className="text-xs text-slate-500">No saved options yet. You can also type a room or incharge directly in the sheet.</p>}
+          </div>
+          <div className="space-y-2">
+            {options.filter((option) => option.option_type === "room").map((roomOption) => (
+              <label key={roomOption.id} className="flex flex-col gap-2 rounded-lg border border-slate-700 p-3 text-xs font-semibold text-slate-300 sm:flex-row sm:items-center sm:justify-between">
+                <span>{roomOption.name} filling incharge</span>
+                <select
+                  aria-label={`${roomOption.name} filling incharge`}
+                  value={roomOption.assigned_incharge ?? ""}
+                  onChange={(event) => void saveRoomIncharge(roomOption, event.target.value)}
+                  className="rounded-lg border border-slate-700 bg-[#0b0f19] p-2 text-sm text-white sm:min-w-64"
+                >
+                  <option value="">-- Select incharge --</option>
+                  {options.filter((option) => option.option_type === "incharge").map((incharge) => (
+                    <option key={incharge.id} value={incharge.name}>{incharge.name}</option>
+                  ))}
+                </select>
+              </label>
+            ))}
+            {options.filter((option) => option.option_type === "room").length === 0 && (
+              <p className="text-xs text-slate-500">Add room and incharge options above, then assign an incharge to each room.</p>
+            )}
           </div>
         </section>
       </div>
