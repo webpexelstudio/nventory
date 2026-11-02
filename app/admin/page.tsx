@@ -61,7 +61,7 @@ interface MasterCartonOption {
 
 interface ManagedAppUser {
   user_id: string;
-  role: "admin" | "warehouse" | "filling" | "client";
+  role: "admin" | "warehouse" | "inventory_viewer" | "filling" | "client";
   party_id: string | null;
   email: string;
   is_active: boolean;

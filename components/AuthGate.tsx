@@ -35,7 +35,7 @@ const routePermissions: Record<string, AppRole[]> = {
 
 const roleHome: Record<AppRole, string> = {
   admin: "/admin",
-  warehouse: "/warehouse-issues",
+  warehouse: "/inventory-viewer",
   inventory_viewer: "/inventory-viewer",
   filling: "/filling",
   client: "/client-portal",
@@ -45,7 +45,7 @@ function isAllowed(pathname: string, role: AppRole) {
   const route = Object.keys(routePermissions).find(
     (candidate) => pathname === candidate || pathname.startsWith(`${candidate}/`)
   );
-  return route ? routePermissions[route].includes(role) : true;
+  return route ? routePermissions[route].includes(role) : false;
 }
 
 export function useAppAuth() {
@@ -254,6 +254,9 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   return (
     <AuthContext.Provider value={contextValue}>
       <div className="fixed right-4 top-4 z-[60]">
+        <span className="mr-2 rounded-lg border border-slate-700 bg-slate-950/90 px-3 py-2 text-xs font-semibold text-slate-300 shadow-lg">
+          {user.email} · {profile.role.replaceAll("_", " ")}
+        </span>
         <button
           onClick={() => void signOut().catch((error: unknown) =>
             setProfileError(error instanceof Error ? error.message : String(error))
