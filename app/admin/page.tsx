@@ -59,8 +59,12 @@ interface MasterCartonOption {
   alert_threshold?: number | null;
 }
 
-interface ComponentTypeOption {
-  component_type: string;
+interface ManagedAppUser {
+  user_id: string;
+  role: "admin" | "warehouse" | "filling" | "client";
+  party_id: string | null;
+  email: string;
+  is_active: boolean;
 }
 
 interface MasterCartonProductSettingRow {
@@ -174,7 +178,8 @@ export default function AdminPage() {
   const [fillingLogs, setFillingLogs] = useState<any[]>([]);
   const [warehouseLogs, setWarehouseLogs] = useState<any[]>([]);
   const [inventoryList, setInventoryList] = useState<any[]>([]);
-  const [partyAccessList, setPartyAccessList] = useState<any[]>([]);
+  const [appUsers, setAppUsers] = useState<ManagedAppUser[]>([]);
+  const [appUsersError, setAppUsersError] = useState("");
   const [masterCartonSettings, setMasterCartonSettings] = useState<MasterCartonProductSetting[]>([]);
   const [masterCartonSettingsError, setMasterCartonSettingsError] = useState<string | null>(null);
   const [editingMasterCartonProductId, setEditingMasterCartonProductId] = useState<string | null>(null);
@@ -197,9 +202,11 @@ export default function AdminPage() {
   const [selectedPartyForBom, setSelectedPartyForBom] = useState("");
   const [selectedProductForBom, setSelectedProductForBom] = useState("");
 
-  const [selectedPartyForPortal, setSelectedPartyForPortal] = useState("");
-  const [portalUsername, setPortalUsername] = useState("");
-  const [portalPin, setPortalPin] = useState("");
+  const [editingAppUserId, setEditingAppUserId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState("");
+  const [userPassword, setUserPassword] = useState("");
+  const [userRole, setUserRole] = useState<ManagedAppUser["role"]>("warehouse");
+  const [userPartyId, setUserPartyId] = useState("");
 
   const [componentTypes, setComponentTypes] = useState<string[]>([
     "bottle",
@@ -261,6 +268,12 @@ export default function AdminPage() {
   useEffect(() => {
     void fetchMasterData();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === "client_access") {
+      void fetchAppUsers();
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     const liveChannel = supabase
@@ -588,12 +601,6 @@ export default function AdminPage() {
         .from("inventory")
         .select("*");
       if (invData) setInventoryList(invData);
-
-      const { data: accessData } = await supabase
-        .from("party_access")
-        .select("*, parties(id, name)")
-        .order("created_at", { ascending: false });
-      if (accessData) setPartyAccessList(accessData);
 
       let { data: cartonSettings, error: cartonSettingsError } = await supabase
         .from("master_carton_product_settings")
@@ -1292,49 +1299,99 @@ export default function AdminPage() {
     }
   };
 
-  const handleCreatePartyPortalAccess = async (e: React.FormEvent) => {
+  async function fetchAppUsers() {
+    setAppUsersError("");
+    try {
+      const response = await fetch("/api/admin/users", { cache: "no-store" });
+      const result = await response.json() as { users?: ManagedAppUser[]; error?: string };
+      if (!response.ok) throw new Error(result.error || "Could not load app accounts.");
+      setAppUsers(result.users ?? []);
+    } catch (error) {
+      setAppUsersError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  const handleSaveAppUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedPartyForPortal || !portalUsername || !portalPin) {
-      return alert("Please select Party, Username, and Password PIN.");
+    if (userRole === "client" && !userPartyId) {
+      return alert("Select a party for client accounts.");
+    }
+    if (!editingAppUserId && !userPassword) {
+      return alert("Set a password for the new account.");
     }
 
     setLoading(true);
+    setAppUsersError("");
     try {
-      const { error } = await supabase.from("party_access").insert([
-        {
-          party_id: selectedPartyForPortal,
-          username: portalUsername.trim(),
-          access_pin: portalPin.trim(),
-          is_active: true,
-        },
-      ]);
+      const response = await fetch("/api/admin/users", {
+        method: editingAppUserId ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(editingAppUserId ? { user_id: editingAppUserId } : {}),
+          email: userEmail.trim(),
+          password: userPassword,
+          role: userRole,
+          party_id: userRole === "client" ? userPartyId : null,
+          ...(editingAppUserId
+            ? { is_active: appUsers.find((user) => user.user_id === editingAppUserId)?.is_active ?? true }
+            : {}),
+        }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || "Could not save this account.");
 
-      if (error) throw error;
-
-      alert(`Portal Access Created Successfully in Database for Username: ${portalUsername}`);
-      setSelectedPartyForPortal("");
-      setPortalUsername("");
-      setPortalPin("");
-      fetchMasterData();
-    } catch (err: any) {
-      alert("Error creating portal access: " + err.message);
+      setEditingAppUserId(null);
+      setUserEmail("");
+      setUserPassword("");
+      setUserRole("warehouse");
+      setUserPartyId("");
+      await fetchAppUsers();
+    } catch (error) {
+      setAppUsersError(error instanceof Error ? error.message : String(error));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleTogglePortalStatus = async (accessId: string, currentStatus: boolean) => {
-    setLoading(true);
-    try {
-      const { error } = await supabase
-        .from("party_access")
-        .update({ is_active: !currentStatus })
-        .eq("id", accessId);
+  const handleEditAppUser = (user: ManagedAppUser) => {
+    setEditingAppUserId(user.user_id);
+    setUserEmail(user.email);
+    setUserPassword("");
+    setUserRole(user.role);
+    setUserPartyId(user.party_id ?? "");
+    setAppUsersError("");
+  };
 
-      if (error) throw error;
-      fetchMasterData();
-    } catch (err: any) {
-      alert("Error updating status: " + err.message);
+  const handleCancelEditAppUser = () => {
+    setEditingAppUserId(null);
+    setUserEmail("");
+    setUserPassword("");
+    setUserRole("warehouse");
+    setUserPartyId("");
+    setAppUsersError("");
+  };
+
+  const handleToggleAppUser = async (user: ManagedAppUser) => {
+    setLoading(true);
+    setAppUsersError("");
+    try {
+      const response = await fetch("/api/admin/users", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: user.user_id,
+          email: user.email,
+          password: "",
+          role: user.role,
+          party_id: user.party_id,
+          is_active: !user.is_active,
+        }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || "Could not update this account.");
+      await fetchAppUsers();
+    } catch (error) {
+      setAppUsersError(error instanceof Error ? error.message : String(error));
     } finally {
       setLoading(false);
     }
@@ -1568,7 +1625,7 @@ export default function AdminPage() {
           <button onClick={() => setActiveTab("master_cartons")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "master_cartons" ? "bg-cyan-700 text-white" : "text-slate-400 hover:text-white"}`}>Master Cartons</button>
           <button onClick={() => setActiveTab("warehouse")} className={`px-3 py-2 rounded-lg font-bold transition uppercase ${activeTab === "warehouse" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}>Warehouse IN/OUT</button>
           <button onClick={() => setActiveTab("inventory")} className={`px-3 py-2 rounded-lg font-bold transition uppercase ${activeTab === "inventory" ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-white"}`}>Total Inventory</button>
-          <button onClick={() => setActiveTab("client_access")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "client_access" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"}`}>Client Portal Access</button>
+          <button onClick={() => setActiveTab("client_access")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "client_access" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"}`}>User Access &amp; Roles</button>
         </div>
       </div>
 
@@ -2317,24 +2374,81 @@ export default function AdminPage() {
         {activeTab === "client_access" && (
           <div className="space-y-6">
             <div className="bg-[#121827] border border-slate-800 p-6 rounded-xl shadow-lg">
-              <h2 className="text-md font-semibold text-white mb-4">Generate & Assign Portal Access to Party</h2>
-              <form onSubmit={handleCreatePartyPortalAccess} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-                <div>
-                  <label className="block text-xs text-slate-400 mb-1">Select Party</label>
-                  <select value={selectedPartyForPortal} onChange={(e) => setSelectedPartyForPortal(e.target.value)} className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200" required>
-                    <option value="">-- Select Party --</option>
-                    {partiesList.map((p) => (<option key={p.id} value={p.id}>{p.name} ({p.code})</option>))}
+              <h2 className="text-md font-semibold text-white mb-2">
+                {editingAppUserId ? "Edit authenticated account" : "Create authenticated account"}
+              </h2>
+              <p className="mb-4 text-xs leading-5 text-slate-400">
+                Create the email and password here. Password changes are sent securely to the server and are never shown in the account list.
+              </p>
+              {appUsersError && (
+                <p role="alert" className="mb-4 rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-300">
+                  {appUsersError}
+                </p>
+              )}
+              <form onSubmit={handleSaveAppUser} className="grid grid-cols-1 gap-4 md:grid-cols-4 md:items-end">
+                <label className="block text-xs text-slate-400">
+                  Email
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    value={userEmail}
+                    onChange={(event) => setUserEmail(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-800 bg-[#0b0f19] px-3 py-2 text-xs text-slate-200"
+                    required
+                  />
+                </label>
+                <label className="block text-xs text-slate-400">
+                  {editingAppUserId ? "New password (optional)" : "Password"}
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={userPassword}
+                    onChange={(event) => setUserPassword(event.target.value)}
+                    minLength={8}
+                    maxLength={72}
+                    placeholder={editingAppUserId ? "Leave blank to keep current" : "At least 8 characters"}
+                    className="mt-1 w-full rounded-lg border border-slate-800 bg-[#0b0f19] px-3 py-2 text-xs text-slate-200"
+                    required={!editingAppUserId}
+                  />
+                </label>
+                <label className="block text-xs text-slate-400">
+                  Role
+                  <select
+                    value={userRole}
+                    onChange={(event) => setUserRole(event.target.value as ManagedAppUser["role"])}
+                    className="mt-1 w-full rounded-lg border border-slate-800 bg-[#0b0f19] px-3 py-2 text-xs text-slate-200"
+                  >
+                    <option value="admin">Admin</option>
+                    <option value="warehouse">Warehouse</option>
+                    <option value="inventory_viewer">Inventory Viewer (rent add only)</option>
+                    <option value="filling">Filling</option>
+                    <option value="client">Client</option>
                   </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-400 mb-1">Login Username</label>
-                  <input type="text" value={portalUsername} onChange={(e) => setPortalUsername(e.target.value)} placeholder="e.g. magitech_user" className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200" required />
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-400 mb-1">Secret Password PIN</label>
-                  <input type="text" value={portalPin} onChange={(e) => setPortalPin(e.target.value)} placeholder="e.g. 123456" className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono" required />
-                </div>
-                <button type="submit" disabled={loading} className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded-lg text-xs">Create Portal Access</button>
+                </label>
+                {userRole === "client" && (
+                  <label className="block text-xs text-slate-400">
+                    Linked party
+                    <select
+                      value={userPartyId}
+                      onChange={(event) => setUserPartyId(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-800 bg-[#0b0f19] px-3 py-2 text-xs text-slate-200"
+                      required
+                    >
+                      <option value="">-- Select Party --</option>
+                      {partiesList.map((party) => (
+                        <option key={party.id} value={party.id}>{party.name} ({party.code})</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <button type="submit" disabled={loading} className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-60">
+                  {loading ? "Saving..." : editingAppUserId ? "Save changes" : "Create account"}
+                </button>
+                {editingAppUserId && (
+                  <button type="button" onClick={handleCancelEditAppUser} disabled={loading} className="rounded-lg bg-slate-700 px-4 py-2 text-xs font-medium text-white disabled:opacity-60">
+                    Cancel edit
+                  </button>
+                )}
               </form>
             </div>
 
@@ -2414,26 +2528,43 @@ export default function AdminPage() {
             </div>
 
             <div className="bg-[#121827] border border-slate-800 p-6 rounded-xl shadow-lg space-y-4">
-              <h3 className="text-sm font-semibold text-slate-200">Active Party Portal Credentials</h3>
+              <h3 className="text-sm font-semibold text-slate-200">App accounts</h3>
+              {appUsersError && (
+                <p role="alert" className="rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-300">
+                  {appUsersError}
+                </p>
+              )}
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs text-slate-300">
                   <thead className="bg-[#0b0f19] text-slate-400 uppercase">
-                    <tr><th className="p-3">Party Name</th><th className="p-3">Username</th><th className="p-3">PIN</th><th className="p-3">Status</th><th className="p-3 text-right">Toggle</th></tr>
+                    <tr><th className="p-3">Email</th><th className="p-3">Role</th><th className="p-3">Party</th><th className="p-3">Status</th><th className="p-3 text-right">Actions</th></tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
-                    {partyAccessList.map((acc) => (
-                      <tr key={acc.id} className="hover:bg-slate-800/50">
-                        <td className="p-3 font-bold text-white">{acc.parties?.name || acc.party_name}</td>
-                        <td className="p-3 font-mono text-indigo-400">{acc.username}</td>
-                        <td className="p-3 font-mono text-amber-300">{acc.access_pin}</td>
-                        <td className="p-3"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${acc.is_active ? "bg-emerald-950 text-emerald-400" : "bg-rose-950 text-rose-400"}`}>{acc.is_active ? "ACTIVE" : "DISABLED"}</span></td>
+                    {appUsers.map((appUser) => (
+                      <tr key={appUser.user_id} className="hover:bg-slate-800/50">
+                        <td className="p-3 text-indigo-300">{appUser.email}</td>
+                        <td className="p-3 font-bold uppercase text-white">{appUser.role}</td>
+                        <td className="p-3">{partiesList.find((party) => party.id === appUser.party_id)?.name ?? "—"}</td>
+                        <td className="p-3">
+                          <span className={`rounded px-2 py-0.5 text-[10px] font-bold ${appUser.is_active ? "bg-emerald-950 text-emerald-400" : "bg-rose-950 text-rose-400"}`}>
+                            {appUser.is_active ? "ENABLED" : "DISABLED"}
+                          </span>
+                        </td>
                         <td className="p-3 text-right">
-                          <button onClick={() => handleTogglePortalStatus(acc.id, acc.is_active)} className={`px-3 py-1 rounded text-xs font-semibold ${acc.is_active ? "bg-rose-900/30 text-rose-400" : "bg-emerald-900/30 text-emerald-400"}`}>
-                            {acc.is_active ? "Disable" : "Enable"}
-                          </button>
+                          <div className="flex justify-end gap-2">
+                            <button onClick={() => handleEditAppUser(appUser)} disabled={loading} className="rounded bg-blue-900/40 px-3 py-1 text-xs font-semibold text-blue-300 disabled:opacity-60">
+                              Edit
+                            </button>
+                            <button onClick={() => void handleToggleAppUser(appUser)} disabled={loading} className={`rounded px-3 py-1 text-xs font-semibold disabled:opacity-60 ${appUser.is_active ? "bg-rose-900/30 text-rose-300" : "bg-emerald-900/30 text-emerald-300"}`}>
+                              {appUser.is_active ? "Disable" : "Enable"}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
+                    {appUsers.length === 0 && (
+                      <tr><td colSpan={5} className="p-4 text-center text-slate-500">No app accounts have been created yet.</td></tr>
+                    )}
                   </tbody>
                 </table>
               </div>

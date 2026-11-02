@@ -18,7 +18,7 @@ interface TransportationRent {
 }
 
 interface TransportationRentPanelProps {
-  mode: "admin" | "viewer";
+  mode: "admin" | "viewer" | "read-only" | "add-only";
 }
 
 interface Company {
@@ -682,16 +682,20 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
         </>
       )}
 
-      {mode === "viewer" && (
+      {(mode === "viewer" || mode === "read-only" || mode === "add-only") && (
         <div>
           <h2 className="text-lg font-bold text-white">Transportation Rents</h2>
           <p className="mt-1 text-xs text-slate-400">
-            Add new rents or pay, edit, and delete existing records below.
+            {mode === "add-only"
+              ? "Add transportation rent records. Existing records are view-only."
+              : mode === "read-only"
+              ? "View transportation rent records."
+              : "Add new rents or pay, edit, and delete existing records below."}
           </p>
         </div>
       )}
 
-      <form
+      {mode !== "read-only" && <form
         onSubmit={handleAddRent}
         className="grid grid-cols-1 gap-3 rounded-2xl border border-slate-800 bg-[#121827] p-4 sm:grid-cols-2 lg:grid-cols-7"
       >
@@ -842,7 +846,7 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
             >
               Add Rent
             </button>
-      </form>
+      </form>}
 
       {mode === "admin" && (
         <>
@@ -980,7 +984,7 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
                         <th className="p-3">Paid To (PKR)</th>
                         <th className="p-3">Company / Details</th>
                         <th className="p-3">Status</th>
-                        <th className="p-3 text-right">Actions</th>
+                        {(mode === "admin" || mode === "viewer") && <th className="p-3 text-right">Actions</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800">
@@ -1005,7 +1009,7 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
                               </div>
                             )}
                           </td>
-                          <td className="p-3 text-right">
+                          {(mode === "admin" || mode === "viewer") && <td className="p-3 text-right">
                             <div className="flex justify-end gap-2">
                               {activeTab === "pending" && (
                                 <button
@@ -1034,7 +1038,7 @@ export default function TransportationRentPanel({ mode }: TransportationRentPane
                                 Delete
                               </button>
                             </div>
-                          </td>
+                          </td>}
                         </tr>
                       ))}
                     </tbody>

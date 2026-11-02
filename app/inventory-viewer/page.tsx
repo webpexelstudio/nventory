@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useCallback, useState, useEffect } from "react";
 import Link from "next/link";
 import TransportationRentPanel from "@/components/TransportationRentPanel";
+import { useAppAuth } from "@/components/AuthGate";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
@@ -51,7 +52,12 @@ interface ProductBomCapacity {
   capacity_unit: "ML" | "GM" | null;
 }
 
+type ExportCell = string | number | null;
+type ExportRow = Record<string, ExportCell>;
+
 export default function WarehouseStaffPortal() {
+  const { profile } = useAppAuth();
+  const isReadOnlyViewer = profile?.role === "inventory_viewer";
   const [activeTab, setActiveTab] = useState<"balance" | "stock_in" | "stock_out" | "transportation_rent">("balance");
 
   // Master Data
@@ -80,38 +86,70 @@ export default function WarehouseStaffPortal() {
   const [outStartDate, setOutStartDate] = useState("");
   const [outEndDate, setOutEndDate] = useState("");
 
-  useEffect(() => {
-    fetchWarehouseData();
-  }, []);
+  const fetchWarehouseData = useCallback(async () => {
+    const { data: partyData, error: partyError } = await supabase.from("parties").select("*").order("name");
+    if (partyError) throw new Error(`Parties: ${partyError.message} (${partyError.code})`);
 
-  const fetchWarehouseData = async () => {
-    setWarehouseDataError(null);
-    try {
-      const { data: partyData, error: partyError } = await supabase.from("parties").select("*").order("name");
-      if (partyError) throw new Error(`Parties: ${partyError.message} (${partyError.code})`);
-      setPartiesList(partyData ?? []);
+    const { data: prodData, error: productsError } = await supabase.from("products").select("*").order("product_name");
+    if (productsError) throw new Error(`Products: ${productsError.message} (${productsError.code})`);
 
-      const { data: prodData, error: productsError } = await supabase.from("products").select("*").order("product_name");
-      if (productsError) throw new Error(`Products: ${productsError.message} (${productsError.code})`);
-      setProductsList(prodData ?? []);
+    const { data: logData, error: logsError } = await supabase.from("inventory_logs").select("*").order("created_at", { ascending: false });
+    if (logsError) throw new Error(`Inventory logs: ${logsError.message} (${logsError.code})`);
 
-      const { data: logData, error: logsError } = await supabase.from("inventory_logs").select("*").order("created_at", { ascending: false });
-      if (logsError) throw new Error(`Inventory logs: ${logsError.message} (${logsError.code})`);
-      setInOutLogs(logData ?? []);
+    const { data: stockData, error: stockError } = await supabase.from("inventory").select("*");
+    if (stockError) throw new Error(`Inventory balances: ${stockError.message} (${stockError.code})`);
 
-      const { data: stockData, error: stockError } = await supabase.from("inventory").select("*");
-      if (stockError) throw new Error(`Inventory balances: ${stockError.message} (${stockError.code})`);
-      setStockBalances(stockData ?? []);
-
-      const { data: bomData, error: bomError } = await supabase
+    const { data: bomData, error: bomError } = await supabase
         .from("product_bom")
         .select("product_id, component_type, ml_capacity, capacity_unit");
-      if (bomError) throw new Error(`Product BOM: ${bomError.message} (${bomError.code})`);
-      setProductBomCapacities(bomData ?? []);
+    if (bomError) throw new Error(`Product BOM: ${bomError.message} (${bomError.code})`);
+
+    return {
+      parties: partyData ?? [],
+      products: prodData ?? [],
+      logs: logData ?? [],
+      stock: stockData ?? [],
+      bom: bomData ?? [],
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    void fetchWarehouseData()
+      .then(({ parties, products, logs, stock, bom }) => {
+        if (!isMounted) return;
+        setPartiesList(parties);
+        setProductsList(products);
+        setInOutLogs(logs);
+        setStockBalances(stock);
+        setProductBomCapacities(bom);
+        setWarehouseDataError(null);
+      })
+      .catch((error: unknown) => {
+        if (isMounted) {
+          setWarehouseDataError(error instanceof Error ? error.message : String(error));
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [fetchWarehouseData]);
+
+  const refreshWarehouseData = async () => {
+    try {
+      const { parties, products, logs, stock, bom } = await fetchWarehouseData();
+      setPartiesList(parties);
+      setProductsList(products);
+      setInOutLogs(logs);
+      setStockBalances(stock);
+      setProductBomCapacities(bom);
+      setWarehouseDataError(null);
     } catch (error) {
       setWarehouseDataError(error instanceof Error ? error.message : String(error));
     }
   };
+
   const getProductId = (partyName?: string, productName?: string) => {
     if (!partyName || !productName) return undefined;
     const party = partiesList.find((item) => item.name.toLowerCase() === partyName.toLowerCase());
@@ -141,7 +179,7 @@ export default function WarehouseStaffPortal() {
   };
 
   // Export Utilities
-  const exportExcel = (data: any[], fileName: string) => {
+  const exportExcel = (data: ExportRow[], fileName: string) => {
     const exportData = data.map((row) =>
       typeof row.component_type === "string"
         ? { ...row, component_type: row.component_type.toUpperCase() }
@@ -161,7 +199,7 @@ export default function WarehouseStaffPortal() {
     XLSX.writeFile(workbook, `${fileName}_${new Date().toISOString().split("T")[0]}.xlsx`);
   };
 
-  const exportPDF = (title: string, headers: string[], body: any[][]) => {
+  const exportPDF = (title: string, headers: string[], body: ExportCell[][]) => {
     const doc = new jsPDF();
     const partyColumn = headers.findIndex((header) =>
       ["party", "party name"].includes(header.toLowerCase().trim())
@@ -318,11 +356,13 @@ export default function WarehouseStaffPortal() {
           <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1">Stock Balance, IN & OUT Viewer</h1>
         </div>
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-          <Link href="/production-sheet" className="w-full rounded-xl border border-cyan-700 bg-cyan-800 px-3 py-2 text-center text-xs font-bold text-white hover:bg-cyan-700 sm:w-auto">
-            Hourly Production Sheet
-          </Link>
+          {!isReadOnlyViewer && (
+            <Link href="/production-sheet" className="w-full rounded-xl border border-cyan-700 bg-cyan-800 px-3 py-2 text-center text-xs font-bold text-white hover:bg-cyan-700 sm:w-auto">
+              Hourly Production Sheet
+            </Link>
+          )}
           <button
-            onClick={fetchWarehouseData}
+            onClick={refreshWarehouseData}
             className="w-full rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-center text-xs font-bold text-slate-200 hover:bg-slate-700 sm:w-auto"
           >
             🔄 Refresh Data
@@ -700,7 +740,9 @@ export default function WarehouseStaffPortal() {
             </div>
           </div>
         )}
-        {activeTab === "transportation_rent" && <TransportationRentPanel mode="viewer" />}
+        {activeTab === "transportation_rent" && (
+          <TransportationRentPanel mode={isReadOnlyViewer ? "add-only" : "viewer"} />
+        )}
       </div>
     </div>
   );

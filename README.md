@@ -1,5 +1,54 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Supabase authentication and roles
+
+The app uses Supabase Auth email/password accounts with database-enforced roles:
+`admin`, `warehouse`, `inventory_viewer`, `filling`, and `client`. Inventory
+viewers can view inventory and transportation records and add rent entries, but
+cannot edit or pay existing rents. The client portal uses the same
+authenticated login as staff and is restricted to the party linked to its
+account. The former client username/PIN login is no longer used.
+
+Before deploying the app changes:
+
+1. Configure `SUPABASE_SERVICE_ROLE_KEY` as a server-only environment variable
+   in local `.env.local` and the hosting provider. Use the Supabase secret/service
+   role key; never prefix it with `NEXT_PUBLIC_` or expose it in browser code.
+2. Back up the Supabase project and apply
+   `supabase/migrations/20261117000000_add_authenticated_app_roles.sql` in the
+   Supabase SQL Editor. It enables row-level security and removes direct
+   anonymous table access from the app's tables.
+3. Apply
+   `supabase/migrations/20261118000000_add_user_profile_active_status.sql`.
+   This adds database-enforced account disable/enable status.
+4. Apply
+   `supabase/migrations/20261119000000_add_inventory_viewer_role.sql`.
+   This adds the inventory viewer role.
+5. Apply
+   `supabase/migrations/20261120000000_allow_inventory_viewer_rent_insert.sql`.
+   This lets inventory viewers add rent entries without changing existing records.
+6. Apply
+   `supabase/migrations/20261121000000_grant_master_carton_options_select_authenticated.sql`.
+   This restores authenticated read access to master carton options while keeping
+   row-level security in place.
+7. Create the first administrator in **Authentication → Users** in the
+   Supabase Dashboard. Copy that user's UID.
+8. In the SQL Editor, assign the first admin role using the copied UID:
+
+   ```sql
+   INSERT INTO public.user_profiles (user_id, role)
+   VALUES ('PASTE-AUTH-USER-UUID-HERE', 'admin');
+   ```
+
+9. Sign in to the app as that user. Create accounts, set/reset their passwords,
+   assign roles and (for clients) parties, and enable/disable access in
+   **Admin → User Access & Roles**. Passwords are managed by Supabase Auth.
+
+The migration does not remove existing rows from `party_access`; it revokes
+application access to that legacy PIN table. Existing client PINs will not
+authenticate after the app is deployed. Create new Auth accounts and link each
+one to its party before moving clients to the new login.
+
 ## Getting Started
 
 First, run the development server:

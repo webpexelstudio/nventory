@@ -25,6 +25,9 @@ interface ProductionRow {
   incharge_name: string;
   room_number?: number | null;
   party_name?: string;
+  filling_request_id?: string;
+  requested_pcs?: number;
+  remaining_pcs?: number;
   product_name: string;
   batch_no: string;
   retail_price: string;
@@ -49,9 +52,11 @@ interface ProductionSheet {
 }
 
 interface FillingPurchaseOrder {
+  id: string;
   room_number: number | null;
   party_name: string;
   product_name: string;
+  pcs_requested: number;
   batch_no: string | null;
   retail_price: number | null;
   mfg_date: string | null;
@@ -122,11 +127,25 @@ const reportShareText = (report: ProductionSheet) => {
       .join(" | ");
     const cartons = rowCartons(row);
     const details = [
-      row.room_number ? `Room ${row.room_number}` : "",
-      row.party_name || "",
-      row.incharge_name || "",
-    ].filter(Boolean).join(" · ");
-    return `${index + 1}. ${row.product_name || "Product"}${row.batch_no ? ` (Batch ${row.batch_no})` : ""}${details ? ` · ${details}` : ""} - ${rowTotal(row).toLocaleString()} pcs${cartons === null ? "" : ` · ${formatCartons(cartons)} cartons`}${hourly ? `\n   ${hourly}` : ""}`;
+      row.room_number ? `Room: ${row.room_number}` : "",
+      row.party_name ? `Party: ${row.party_name}` : "",
+      row.incharge_name ? `Incharge: ${row.incharge_name}` : "",
+      row.batch_no ? `Batch: ${row.batch_no}` : "",
+      row.retail_price ? `Retail: ${row.retail_price}` : "",
+      row.mfg_date ? `MFG: ${row.mfg_date}` : "",
+      row.exp_date ? `EXP: ${row.exp_date}` : "",
+      row.carton_no ? `Carton no: ${row.carton_no}` : "",
+      row.pcs_per_carton ? `Pcs/carton: ${row.pcs_per_carton}` : "",
+      row.pcs_weight ? `Pcs weight: ${row.pcs_weight}` : "",
+      row.requested_pcs != null ? `Filling PO qty: ${row.requested_pcs.toLocaleString()} pcs` : "",
+      row.remaining_pcs != null ? `Remaining PO qty: ${row.remaining_pcs.toLocaleString()} pcs` : "",
+    ].filter(Boolean);
+    if (hourly) details.push(`Hourly: ${hourly}`);
+    details.push(
+      `Total: ${rowTotal(row).toLocaleString()} pcs`,
+      ...(cartons === null ? [] : [`Cartons made: ${formatCartons(cartons)}`]),
+    );
+    return `${index + 1}. ${row.product_name || "Product"}\n   ${details.join("\n   ")}`;
   });
 
   return [
@@ -175,6 +194,63 @@ export default function ProductionSheetPage() {
     () => rows.reduce((total, row) => total + rowTotal(row), 0),
     [rows],
   );
+
+  const savedProductionForRequest = useCallback(
+    (requestId: string, excludedReportId: string | null = editingId) =>
+      reports
+        .filter((report) => report.id !== excludedReportId)
+        .reduce(
+          (total, report) => total + (report.rows ?? [])
+            .filter((row) => row.filling_request_id === requestId)
+            .reduce((rowTotalPcs, row) => rowTotalPcs + rowTotal(row), 0),
+          0,
+        ),
+    [reports, editingId],
+  );
+
+  const getRemainingForRow = (row: ProductionRow, rowIndex: number) => {
+    if (!row.filling_request_id || row.requested_pcs == null) return null;
+    const enteredOnSheet = rows
+      .slice(0, rowIndex + 1)
+      .filter((item) => item.filling_request_id === row.filling_request_id)
+      .reduce((total, item) => total + rowTotal(item), 0);
+    return Math.max(
+      0,
+      row.requested_pcs - savedProductionForRequest(row.filling_request_id) - enteredOnSheet,
+    );
+  };
+
+  const fillingPOBalances = useMemo(() => {
+    const requests = new Map<string, ProductionRow>();
+    for (const report of reports) {
+      for (const row of report.rows ?? []) {
+        if (row.filling_request_id && row.requested_pcs != null) {
+          requests.set(row.filling_request_id, requests.get(row.filling_request_id) ?? row);
+        }
+      }
+    }
+    for (const row of rows) {
+      if (row.filling_request_id && row.requested_pcs != null) {
+        requests.set(row.filling_request_id, requests.get(row.filling_request_id) ?? row);
+      }
+    }
+    return Array.from(requests, ([requestId, row]) => {
+      const producedPcs = savedProductionForRequest(requestId) + rows
+        .filter((item) => item.filling_request_id === requestId)
+        .reduce((total, item) => total + rowTotal(item), 0);
+      return {
+        requestId,
+        partyName: row.party_name || "—",
+        productName: row.product_name || "—",
+        requestedPcs: row.requested_pcs ?? 0,
+        producedPcs,
+        remainingPcs: Math.max(0, (row.requested_pcs ?? 0) - producedPcs),
+      };
+    }).sort((first, second) =>
+      first.partyName.localeCompare(second.partyName) ||
+      first.productName.localeCompare(second.productName)
+    );
+  }, [reports, rows, savedProductionForRequest]);
 
   const fetchData = useCallback(async () => Promise.all([
       supabase.from("production_data_sheets").select("*").order("report_date", { ascending: false }).order("updated_at", { ascending: false }),
@@ -296,6 +372,7 @@ export default function ProductionSheetPage() {
     setFillingPODate(date);
     setFillingPOCount(null);
     if (!date) {
+      setRows([{ ...emptyRow(), incharge_name: productionIncharge }]);
       setLoadingFillingPOs(false);
       return;
     }
@@ -305,7 +382,7 @@ export default function ProductionSheetPage() {
     try {
       const { data, error: fillingPOError } = await supabase
         .from("filling_requests")
-        .select("room_number, party_name, product_name, batch_no, retail_price, mfg_date, exp_date, pack_size, pack_unit, master_carton_count, master_carton_pcs")
+        .select("id, room_number, party_name, product_name, pcs_requested, batch_no, retail_price, mfg_date, exp_date, pack_size, pack_unit, master_carton_count, master_carton_pcs")
         .eq("required_date", date)
         .order("created_at", { ascending: true });
 
@@ -316,6 +393,8 @@ export default function ProductionSheetPage() {
       setRows(fillingPOs.length > 0
         ? fillingPOs.map((order) => ({
           ...emptyRow(),
+          filling_request_id: order.id,
+          requested_pcs: order.pcs_requested,
           incharge_name: getRoomIncharge(order.room_number) || (order.room_number == null ? productionIncharge : ""),
           room_number: order.room_number,
           party_name: order.party_name,
@@ -358,13 +437,23 @@ export default function ProductionSheetPage() {
     setSaving(true);
     setError(null);
     setNotice(null);
+    const savedProductionByRequest = new Map<string, number>();
+    const rowsWithRemaining = rows.map((row) => {
+      if (!row.filling_request_id || row.requested_pcs == null) return row;
+      const previouslyProduced = savedProductionByRequest.has(row.filling_request_id)
+        ? savedProductionByRequest.get(row.filling_request_id) ?? 0
+        : savedProductionForRequest(row.filling_request_id);
+      const producedIncludingRow = previouslyProduced + rowTotal(row);
+      savedProductionByRequest.set(row.filling_request_id, producedIncludingRow);
+      return { ...row, remaining_pcs: Math.max(0, row.requested_pcs - producedIncludingRow) };
+    });
     const payload = {
       report_date: reportDate,
       room_name: roomName.trim(),
       packing_incharge: packingIncharge.trim(),
       production_incharge: productionIncharge.trim(),
       daily_target: numericValue(dailyTarget),
-      rows,
+      rows: rowsWithRemaining,
       updated_at: new Date().toISOString(),
     };
     const result = editingId
@@ -498,6 +587,8 @@ export default function ProductionSheetPage() {
       row.pcs_weight || "-",
       ...HOUR_SLOTS.map((hour) => hour === "14:00" ? "BREAK" : row.hourly?.[hour] || "-"),
       rowTotal(row).toLocaleString(),
+      row.requested_pcs == null ? "-" : row.requested_pcs.toLocaleString(),
+      row.remaining_pcs == null ? "-" : row.remaining_pcs.toLocaleString(),
       rowCartons(row) === null ? "-" : formatCartons(rowCartons(row) ?? 0),
     ]);
 
@@ -520,7 +611,7 @@ export default function ProductionSheetPage() {
       startY: 37,
       head: [[
         "#", "Incharge", "Room", "Party", "Product", "Batch", "Retail", "MFG", "EXP", "C/No",
-        "P/Carton", "P/C weight", ...hourlyHeaders, "Total pcs", "Cartons made",
+        "P/Carton", "P/C weight",         ...hourlyHeaders, "Total pcs", "PO qty", "Remaining pcs", "Cartons made",
       ]],
       body,
       theme: "grid",
@@ -635,7 +726,7 @@ export default function ProductionSheetPage() {
                 <tr>
                   <th className="p-2">#</th><th className="p-2">Filling incharge</th><th className="p-2">Room</th><th className="p-2">Party</th><th className="p-2">Product name & size</th><th className="p-2">Batch no</th><th className="p-2">Retail price</th><th className="p-2">MFG</th><th className="p-2">EXP</th><th className="p-2">C/No</th><th className="p-2">P/Carton</th><th className="p-2">P/C weight</th>
                   {HOUR_SLOTS.map((hour) => <th key={hour} className={`min-w-20 p-2 text-center ${hour === "14:00" ? "bg-blue-900/70" : ""}`}>{hour === "14:00" ? "2 PM BREAK" : `${Number(hour.slice(0, 2)) % 12 || 12}:00 ${Number(hour.slice(0, 2)) < 12 ? "AM" : "PM"}`}</th>)}
-                  <th className="p-2 text-right">Total pcs</th><th className="p-2 text-right">Cartons made</th><th className="p-2">Action</th>
+                  <th className="p-2 text-right">Total pcs</th><th className="p-2 text-right">PO qty</th><th className="p-2 text-right">Remaining pcs</th><th className="p-2 text-right">Cartons made</th><th className="p-2">Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -673,6 +764,8 @@ export default function ProductionSheetPage() {
                       </td>
                     ))}
                     <td className="p-2 text-right font-bold text-amber-300">{rowTotal(row).toLocaleString()}</td>
+                    <td className="p-2 text-right">{row.requested_pcs == null ? "—" : row.requested_pcs.toLocaleString()}</td>
+                    <td className="p-2 text-right font-bold text-cyan-300">{getRemainingForRow(row, index)?.toLocaleString() ?? "—"}</td>
                     <td className="p-2 text-right font-bold text-cyan-300">{rowCartons(row) === null ? "—" : formatCartons(rowCartons(row) ?? 0)}</td>
                     <td className="p-1"><button type="button" disabled={rows.length === 1} onClick={() => setRows((current) => current.filter((_, rowIndex) => rowIndex !== index))} className="rounded border border-rose-800 px-2 py-2 text-rose-300 disabled:opacity-40">Remove</button></td>
                   </tr>
@@ -681,7 +774,7 @@ export default function ProductionSheetPage() {
                   <td colSpan={12} className="p-2 text-right">HOURLY TOTAL</td>
                   {hourlyTotals.map((total, index) => <td key={HOUR_SLOTS[index]} className="p-2 text-right">{HOUR_SLOTS[index] === "14:00" ? "BREAK" : total.toLocaleString()}</td>)}
                   <td className="p-2 text-right text-amber-300">{totalProduction.toLocaleString()}</td>
-                  <td className="p-2 text-right text-cyan-300">{formatCartons(rows.reduce((total, row) => total + (rowCartons(row) ?? 0), 0))}</td><td />
+                  <td colSpan={2} /><td className="p-2 text-right text-cyan-300">{formatCartons(rows.reduce((total, row) => total + (rowCartons(row) ?? 0), 0))}</td><td />
                 </tr>
               </tbody>
             </table>
@@ -694,6 +787,33 @@ export default function ProductionSheetPage() {
             <button type="submit" disabled={saving} className="rounded-lg bg-cyan-700 px-5 py-2.5 text-sm font-bold hover:bg-cyan-600 disabled:opacity-50">{saving ? "Saving..." : editingId ? "Update sheet" : "Save sheet"}</button>
           </div>
         </form>
+
+        {fillingPOBalances.length > 0 && (
+          <section className="space-y-3 rounded-xl border border-cyan-900 bg-cyan-950/20 p-4 sm:p-6">
+            <div>
+              <h2 className="text-lg font-bold">Filling PO quantity balance</h2>
+              <p className="text-xs text-slate-400">Remaining = requested PO quantity minus saved production and quantities entered above.</p>
+            </div>
+            <div className="overflow-x-auto rounded-lg border border-slate-700">
+              <table className="w-full min-w-[640px] text-left text-sm">
+                <thead className="bg-slate-800 text-xs uppercase text-slate-300">
+                  <tr><th className="p-2">Party</th><th className="p-2">Product</th><th className="p-2 text-right">PO qty</th><th className="p-2 text-right">Produced pcs</th><th className="p-2 text-right">Remaining pcs</th></tr>
+                </thead>
+                <tbody>
+                  {fillingPOBalances.map((balance) => (
+                    <tr key={balance.requestId} className="border-t border-slate-800">
+                      <td className="p-2">{balance.partyName}</td>
+                      <td className="p-2">{balance.productName}</td>
+                      <td className="p-2 text-right">{balance.requestedPcs.toLocaleString()}</td>
+                      <td className="p-2 text-right">{balance.producedPcs.toLocaleString()}</td>
+                      <td className="p-2 text-right font-bold text-cyan-300">{balance.remainingPcs.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
 
         <section className="space-y-3 rounded-xl border border-slate-800 bg-[#121827] p-4 sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -760,7 +880,7 @@ export default function ProductionSheetPage() {
                       <tr>
                         <th className="p-2">#</th><th className="p-2">Incharge</th><th className="p-2">Room</th><th className="p-2">Party</th><th className="p-2">Product / size</th><th className="p-2">Batch</th><th className="p-2">Retail</th><th className="p-2">MFG</th><th className="p-2">EXP</th><th className="p-2">C/No</th><th className="p-2">P/Carton</th><th className="p-2">P/C weight</th>
                         {HOUR_SLOTS.map((hour) => <th key={hour} className={`min-w-20 p-2 text-center ${hour === "14:00" ? "bg-blue-900/70" : ""}`}>{hour === "14:00" ? "BREAK" : hour}</th>)}
-                        <th className="p-2 text-right">Total pcs</th><th className="p-2 text-right">Cartons made</th>
+                        <th className="p-2 text-right">Total pcs</th><th className="p-2 text-right">PO qty</th><th className="p-2 text-right">Remaining pcs</th><th className="p-2 text-right">Cartons made</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -768,10 +888,10 @@ export default function ProductionSheetPage() {
                         <tr key={`${row.product_name}-${index}`} className="border-t border-slate-800 text-slate-200">
                           <td className="p-2 text-slate-500">{index + 1}</td><td className="p-2">{row.incharge_name || "—"}</td><td className="p-2">{row.room_number ? `Room ${row.room_number}` : "—"}</td><td className="p-2">{row.party_name || "—"}</td><td className="p-2 font-semibold text-white">{row.product_name || "—"}</td><td className="p-2">{row.batch_no || "—"}</td><td className="p-2">{row.retail_price || "—"}</td><td className="p-2">{row.mfg_date || "—"}</td><td className="p-2">{row.exp_date || "—"}</td><td className="p-2">{row.carton_no || "—"}</td><td className="p-2">{row.pcs_per_carton || "—"}</td><td className="p-2">{row.pcs_weight || "—"}</td>
                           {HOUR_SLOTS.map((hour) => <td key={hour} className={`p-2 text-center ${hour === "14:00" ? "bg-blue-950/40 text-slate-500" : ""}`}>{hour === "14:00" ? "—" : row.hourly?.[hour] || "—"}</td>)}
-                          <td className="p-2 text-right font-bold text-amber-300">{rowTotal(row).toLocaleString()}</td><td className="p-2 text-right font-bold text-cyan-300">{rowCartons(row) === null ? "—" : formatCartons(rowCartons(row) ?? 0)}</td>
+                          <td className="p-2 text-right font-bold text-amber-300">{rowTotal(row).toLocaleString()}</td><td className="p-2 text-right">{row.requested_pcs == null ? "—" : row.requested_pcs.toLocaleString()}</td><td className="p-2 text-right font-bold text-cyan-300">{row.remaining_pcs == null ? "—" : row.remaining_pcs.toLocaleString()}</td><td className="p-2 text-right font-bold text-cyan-300">{rowCartons(row) === null ? "—" : formatCartons(rowCartons(row) ?? 0)}</td>
                         </tr>
                       ))}
-                      {(viewingReport.rows ?? []).length === 0 && <tr><td colSpan={26} className="p-8 text-center text-slate-400">No product rows in this report.</td></tr>}
+                      {(viewingReport.rows ?? []).length === 0 && <tr><td colSpan={28} className="p-8 text-center text-slate-400">No product rows in this report.</td></tr>}
                     </tbody>
                   </table>
                 </div>

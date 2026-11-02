@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
+import { useAppAuth } from "@/components/AuthGate";
 import {
   FillingMaterialReturn,
   getFillingMaterialReturnStatusLabel,
@@ -12,7 +13,6 @@ import {
 interface ClientSession {
   party_id: string;
   party_name: string;
-  client_code: string;
 }
 
 interface InventoryLog {
@@ -35,11 +35,9 @@ interface StockBalance {
 }
 
 export default function ClientPortalPage() {
+  const { profile } = useAppAuth();
   const [session, setSession] = useState<ClientSession | null>(null);
-  const [loginCode, setLoginCode] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
   const [authError, setAuthError] = useState("");
-  const [authLoading, setAuthLoading] = useState(false);
 
   const [activeTab, setActiveTab] = useState<"in" | "out" | "balance" | "returns">("in");
   const [loading, setLoading] = useState(false);
@@ -61,118 +59,7 @@ export default function ClientPortalPage() {
 
   const [balanceFilterProduct, setBalanceFilterProduct] = useState("");
 
-  useEffect(() => {
-    const savedSession = localStorage.getItem("client_portal_session");
-    if (savedSession) {
-      try {
-        setSession(JSON.parse(savedSession));
-      } catch (e) {
-        localStorage.removeItem("client_portal_session");
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    if (session?.party_id && session.party_name) {
-      fetchClientInventoryData(session.party_id, session.party_name);
-    }
-  }, [session]);
-
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError("");
-    setAuthLoading(true);
-
-    try {
-      const username = loginCode.trim();
-      const portalPin = loginPassword.trim();
-
-      if (!username || !portalPin) {
-        setAuthError("برائے مہربانی پورٹل Username اور PIN داخل کریں۔");
-        setAuthLoading(false);
-        return;
-      }
-
-      let matchedParty: any = null;
-
-      const { data: accessData, error: accessError } = await supabase
-        .from("party_access")
-        .select("*")
-        .eq("username", username)
-        .eq("access_pin", portalPin)
-        .maybeSingle();
-
-      if (accessError) {
-        console.error("party_access lookup failed:", accessError);
-      }
-
-      if (accessData) {
-        if (accessData.is_active === false) {
-          setAuthError("یہ کلائنٹ پورٹل فی الحال غیر فعال ہے۔");
-          setAuthLoading(false);
-          return;
-        }
-
-        const { data: partyData, error: partyError } = await supabase
-          .from("parties")
-          .select("*")
-          .eq("id", accessData.party_id)
-          .maybeSingle();
-
-        if (partyError) {
-          console.error("party lookup failed:", partyError);
-        }
-
-        matchedParty = partyData;
-      }
-
-      if (!matchedParty) {
-        const { data, error } = await supabase.from("parties").select("*");
-
-        if (error || !data || data.length === 0) {
-          setAuthError("ڈیٹا بیس میں کوئی پارٹی/کلائنٹ نہیں ملا!");
-          setAuthLoading(false);
-          return;
-        }
-
-        const inputVal = username.toLowerCase();
-        matchedParty = data.find(
-          (p: any) =>
-            (p.code && p.code.toLowerCase() === inputVal) ||
-            p.name.toLowerCase() === inputVal ||
-            p.id.toLowerCase() === inputVal
-        );
-      }
-
-      if (!matchedParty) {
-        setAuthError(`کلائنٹ '${username}' نہیں ملا۔ برائے مہربانی صحیح Username یا PIN درج کریں۔`);
-        setAuthLoading(false);
-        return;
-      }
-
-      const clientSessionData: ClientSession = {
-        party_id: matchedParty.id,
-        party_name: matchedParty.name,
-        client_code: matchedParty.code || username,
-      };
-
-      setSession(clientSessionData);
-      localStorage.setItem("client_portal_session", JSON.stringify(clientSessionData));
-    } catch (err: any) {
-      setAuthError("لاگ ان ایرر: " + err.message);
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const handleLogout = () => {
-    setSession(null);
-    localStorage.removeItem("client_portal_session");
-    setLoginCode("");
-    setLoginPassword("");
-  };
-
-  const fetchClientInventoryData = async (partyId: string, partyName: string) => {
+  const fetchClientInventoryData = useCallback(async (partyId: string, partyName: string) => {
     setLoading(true);
     try {
       const { data: inData } = await supabase
@@ -224,14 +111,18 @@ export default function ClientPortalPage() {
         .eq("party_id", partyId)
         .order("product_name");
 
-      const uniqueProducts = Array.from(
-        new Set([
-          ...(productData || []).map((item: any) => item.product_name).filter(Boolean),
-          ...(inData || []).map((item: any) => item.product_name).filter(Boolean),
-          ...(outData || []).map((item: any) => item.product_name).filter(Boolean),
-          ...(balData || []).map((item: any) => item.product_name).filter(Boolean),
-        ])
-      ) as string[];
+      const getProductNames = (rows: unknown[] | null) =>
+        (rows ?? []).flatMap((item) => {
+          if (typeof item !== "object" || item === null || !("product_name" in item)) return [];
+          const name = item.product_name;
+          return typeof name === "string" && name ? [name] : [];
+        });
+      const uniqueProducts = Array.from(new Set([
+        ...getProductNames(productData),
+        ...getProductNames(inData),
+        ...getProductNames(outData),
+        ...getProductNames(balData),
+      ]));
 
       setProductOptions(uniqueProducts.sort((first, second) =>
         first.localeCompare(second, undefined, { sensitivity: "base" })
@@ -244,65 +135,54 @@ export default function ClientPortalPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (!profile?.party_id) return;
+
+    void supabase
+      .from("parties")
+      .select("id, name")
+      .eq("id", profile.party_id)
+      .single()
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          setAuthError(`Could not load the linked party: ${error.message}`);
+          return;
+        }
+        const clientSession = { party_id: data.id, party_name: data.name };
+        setSession(clientSession);
+        void fetchClientInventoryData(clientSession.party_id, clientSession.party_name);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [fetchClientInventoryData, profile?.party_id]);
 
   if (!session) {
     return (
       <div className="min-h-screen bg-[#0b0f19] flex items-center justify-center p-4 font-sans text-slate-100">
-        <div className="bg-[#121827] border border-slate-800 rounded-2xl p-6 sm:p-8 w-full max-w-md shadow-2xl space-y-6">
-          <div className="text-center space-y-2">
-            <span className="text-xs font-bold text-blue-400 uppercase tracking-widest">
-              CLIENT PORTAL ACCESS
-            </span>
-            <h1 className="text-xl sm:text-2xl font-extrabold text-white">Nigehban Warehouse Tracking Login</h1>
-            <p className="text-xs text-slate-400"> Enter your Portal Username and PIN  </p>
-          </div>
-
-          {authError && (
-            <div className="bg-rose-950/80 border border-rose-800 p-3 rounded-xl text-xs text-rose-300 text-center font-medium">
-              ⚠️ {authError}
-            </div>
-          )}
-
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="text-xs text-slate-400 block mb-1">Portal Username</label>
-              <input
-                type="text"
-                value={loginCode}
-                onChange={(e) => setLoginCode(e.target.value)}
-                placeholder="e.g. mexitech_user"
-                className="w-full bg-[#0b0f19] border border-slate-800 rounded-xl p-3 text-xs text-white focus:border-blue-500 outline-none"
-                required
-              />
-            </div>
-
-            <div>
-              <label className="text-xs text-slate-400 block mb-1">Portal PIN</label>
-              <input
-                type="password"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full bg-[#0b0f19] border border-slate-800 rounded-xl p-3 text-xs text-white focus:border-blue-500 outline-none"
-                required
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={authLoading}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl transition text-xs shadow-lg"
-            >
-              {authLoading ? "Verifying..." : "Login to Client Portal"}
-            </button>
-          </form>
+        <div className="max-w-md rounded-2xl border border-slate-800 bg-[#121827] p-6 text-center shadow-2xl">
+          <h1 className="text-xl font-extrabold text-white">Client portal</h1>
+          <p role={authError || !profile?.party_id ? "alert" : undefined} className="mt-3 text-sm text-slate-300">
+            {authError || (!profile?.party_id
+              ? "This client account is not linked to a party. Contact an administrator."
+              : "Loading your linked party...")}
+          </p>
         </div>
       </div>
     );
   }
 
-  const applyFilters = (items: any[], productFilter: string, startDate: string, endDate: string) => {
+  const applyFilters = <T extends { product_name?: string; created_at?: string }>(
+    items: T[],
+    productFilter: string,
+    startDate: string,
+    endDate: string
+  ) => {
     return items.filter((item) => {
       if (productFilter && item.product_name && !item.product_name.toLowerCase().includes(productFilter.toLowerCase())) {
         return false;
@@ -340,15 +220,10 @@ export default function ClientPortalPage() {
         <div className="flex gap-2 w-full sm:w-auto">
           <button
             onClick={() => fetchClientInventoryData(session.party_id, session.party_name)}
-            className="flex-1 sm:flex-none px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-md"
+            disabled={loading}
+            className="flex-1 sm:flex-none rounded-xl bg-blue-600 px-3 py-2 text-xs font-bold text-white shadow-md transition hover:bg-blue-700 disabled:opacity-60"
           >
-            🔄 Refresh Data
-          </button>
-          <button
-            onClick={handleLogout}
-            className="px-3 py-2 bg-rose-600/30 hover:bg-rose-600 text-rose-300 hover:text-white rounded-xl text-xs font-bold border border-rose-500/30 transition"
-          >
-            🚪 Logout
+            {loading ? "Loading..." : "🔄 Refresh Data"}
           </button>
         </div>
       </div>
