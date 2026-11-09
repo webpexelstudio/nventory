@@ -453,32 +453,42 @@ export default function AdminPage() {
         width: number,
         height: number,
         text: string,
-        options: { bold?: boolean; align?: "left" | "center"; inset?: number; fontSize?: number } = {}
+        options: { bold?: boolean; align?: "left" | "center"; inset?: number; fontSize?: number; shaded?: boolean } = {}
       ) => {
         pdf.setDrawColor(0, 0, 0);
-        pdf.setLineWidth(0.9);
-        pdf.rect(x, y, width, height);
+        pdf.setLineWidth(0.35);
+        if (options.shaded) {
+          pdf.setFillColor(238, 242, 247);
+          pdf.rect(x, y, width, height, "FD");
+        } else {
+          pdf.rect(x, y, width, height, "S");
+        }
         if (!text) return;
         pdf.setFont("helvetica", options.bold === false ? "normal" : "bold");
         const baseFontSize = options.fontSize ?? 9.5;
-        pdf.setFontSize(baseFontSize);
+        let displayText = text;
+        let fontSize = baseFontSize;
+        pdf.setFontSize(fontSize);
         pdf.setTextColor(0, 0, 0);
         const availableTextWidth = width - 4;
-        const textWidth = pdf.getTextWidth(text);
-        if (textWidth > availableTextWidth) {
-          pdf.setFontSize(Math.max(5.5, (baseFontSize * availableTextWidth) / textWidth));
+        while (pdf.getTextWidth(displayText) > availableTextWidth && fontSize > 4) {
+          fontSize = Math.max(4, fontSize - 0.5);
+          pdf.setFontSize(fontSize);
+        }
+        while (pdf.getTextWidth(displayText) > availableTextWidth && displayText.length > 1) {
+          displayText = `${displayText.slice(0, -2).trimEnd()}…`;
         }
         const textX =
           options.align === "center" ? x + width / 2 : x + (options.inset ?? 2);
-        pdf.text(text, textX, y + height / 2, {
+        pdf.text(displayText, textX, y + height / 2, {
           align: options.align ?? "left",
           baseline: "middle",
           maxWidth: availableTextWidth,
         });
       };
 
-      const label = () => ({ bold: true as const, inset: 1.2, align: "left" as const, fontSize: 8.5 });
-      const value = () => ({ bold: true as const, inset: 1.5, align: "left" as const, fontSize: 9.5 });
+      const label = () => ({ bold: true as const, align: "center" as const, fontSize: 7, shaded: true });
+      const value = () => ({ bold: true as const, align: "center" as const, fontSize: 9.5 });
       const twoColumnRow = (y: number, leftLabel: string, leftValue: string, rightLabel: string, rightValue: string) => {
         const firstLabelWidth = 20;
         const firstValueWidth = 29;
@@ -512,7 +522,8 @@ export default function AdminPage() {
       y += rowHeight;
       drawCell(left, y, labelWidth, signatureHeight, "PACKED BY:", label());
       drawCell(left, y + signatureHeight, labelWidth, signatureHeight, "CHECKED BY:", label());
-      drawCell(left + labelWidth, y, tableWidth - labelWidth, signatureHeight * 2, "");
+      drawCell(left + labelWidth, y, tableWidth - labelWidth, signatureHeight, "");
+      drawCell(left + labelWidth, y + signatureHeight, tableWidth - labelWidth, signatureHeight, "");
       pdf.setDrawColor(96, 165, 250);
       pdf.setLineWidth(0.8);
       pdf.roundedRect(0.7, 0.7, pageWidth - 1.4, pageHeight - 1.4, 2, 2);
@@ -1591,8 +1602,7 @@ export default function AdminPage() {
 
   return (
     <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-6 font-sans space-y-8">
-      {/* Header & Tabs */}
-      <div className="border-b border-slate-800 pb-4 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 max-w-7xl mx-auto">
+      <header className="mx-auto max-w-7xl space-y-5 border-b border-slate-800 pb-5">
         <div>
           <span className="text-xs font-semibold text-purple-400 uppercase tracking-wider flex items-center gap-2">
             ADMIN CENTRAL DASHBOARD <span className="bg-emerald-500/20 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 font-bold">LIVE REALTIME</span>
@@ -1600,23 +1610,31 @@ export default function AdminPage() {
           <h1 className="text-2xl font-extrabold text-white mt-1">WMS Master & Monitoring Portal</h1>
         </div>
 
-        <Link
-          href="/transportation-rent"
-          className="rounded-lg border border-cyan-700 bg-cyan-950/50 px-4 py-2 text-xs font-bold text-cyan-300 hover:bg-cyan-900/60"
-        >
-          Transportation Rent & Payments
-        </Link>
-        <Link
-          href="/production-sheet"
-          className="rounded-lg border border-emerald-700 bg-emerald-950/50 px-4 py-2 text-xs font-bold text-emerald-300 hover:bg-emerald-900/60"
-        >
-          Hourly Production Sheet
-        </Link>
-        <span className="rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-2 text-xs font-bold text-slate-400">
-          Filling Returns & Damage — Coming Soon
-        </span>
+        <nav aria-label="Admin shortcuts" className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <Link
+            href="/transportation-rent"
+            className="flex min-h-14 items-center rounded-lg border border-cyan-800/80 bg-cyan-950/30 px-4 py-3 text-sm font-semibold leading-snug text-cyan-200 transition hover:border-cyan-600 hover:bg-cyan-900/50"
+          >
+            Transportation Rent &amp; Payments
+          </Link>
+          <Link
+            href="/production-sheet"
+            className="flex min-h-14 items-center rounded-lg border border-emerald-800/80 bg-emerald-950/30 px-4 py-3 text-sm font-semibold leading-snug text-emerald-200 transition hover:border-emerald-600 hover:bg-emerald-900/50"
+          >
+            Hourly Production Sheet
+          </Link>
+          <Link
+            href="/admin/daily-tasks"
+            className="flex min-h-14 items-center rounded-lg border border-amber-800/80 bg-amber-950/30 px-4 py-3 text-sm font-semibold leading-snug text-amber-200 transition hover:border-amber-600 hover:bg-amber-900/50"
+          >
+            Daily Task Tracker
+          </Link>
+          <span className="flex min-h-14 items-center rounded-lg border border-slate-700 bg-slate-800/40 px-4 py-3 text-sm font-semibold leading-snug text-slate-400">
+            Filling Returns &amp; Damage <span className="ml-1 text-xs font-medium text-slate-500">Coming Soon</span>
+          </span>
+        </nav>
 
-        <div className="flex flex-wrap gap-1.5 bg-[#121827] p-1.5 rounded-xl border border-slate-800 text-xs">
+        <nav aria-label="Admin sections" className="flex flex-wrap gap-1.5 rounded-xl border border-slate-800 bg-[#121827] p-1.5 text-xs">
           <button onClick={() => setActiveTab("setup")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "setup" ? "bg-purple-700 text-white" : "text-slate-400 hover:text-white"}`}>+ Add Master</button>
           <button onClick={() => setActiveTab("parties")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "parties" ? "bg-purple-700 text-white" : "text-slate-400 hover:text-white"}`}>Parties ({partiesList.length})</button>
           <button onClick={() => setActiveTab("products")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "products" ? "bg-purple-700 text-white" : "text-slate-400 hover:text-white"}`}>Products ({productsList.length})</button>
@@ -1626,8 +1644,8 @@ export default function AdminPage() {
           <button onClick={() => setActiveTab("warehouse")} className={`px-3 py-2 rounded-lg font-bold transition uppercase ${activeTab === "warehouse" ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white"}`}>Warehouse IN/OUT</button>
           <button onClick={() => setActiveTab("inventory")} className={`px-3 py-2 rounded-lg font-bold transition uppercase ${activeTab === "inventory" ? "bg-emerald-600 text-white" : "text-slate-400 hover:text-white"}`}>Total Inventory</button>
           <button onClick={() => setActiveTab("client_access")} className={`px-3 py-2 rounded-lg font-bold transition ${activeTab === "client_access" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"}`}>User Access &amp; Roles</button>
-        </div>
-      </div>
+        </nav>
+      </header>
 
       <div className="max-w-7xl mx-auto space-y-6">
         {adminDataError && (

@@ -31,16 +31,37 @@ Before deploying the app changes:
    `supabase/migrations/20261121000000_grant_master_carton_options_select_authenticated.sql`.
    This restores authenticated read access to master carton options while keeping
    row-level security in place.
-7. Create the first administrator in **Authentication → Users** in the
+7. Apply
+   `supabase/migrations/20261124000000_add_printed_batch_details_to_inventory_logs.sql`.
+   This lets warehouse staff include printed packaging batch and date details in
+   Stock IN records for the Filling page.
+8. Apply
+   `supabase/migrations/20261122000000_create_party_product_mrps.sql`,
+   `supabase/migrations/20261123000000_add_batch_dates_to_party_product_mrps.sql`,
+   and
+   `supabase/migrations/20261125000000_add_batch_qty_and_prevent_duplicate_filling_batches.sql`
+   in order. These add product batch settings, enforce configured batch
+   quantities, and prevent reusing filling requisition batch numbers.
+9. For **Admin → Daily Task Tracker**, apply
+   `supabase/migrations/20261128000000_create_admin_daily_tasks.sql`,
+   `supabase/migrations/20261129000000_fix_admin_daily_task_option_value.sql`,
+   and
+   `supabase/migrations/20261130000000_add_recurring_admin_daily_tasks.sql`
+   in order. Tasks can repeat daily, every Monday, or on the first day of each
+   month; completed and missed occurrences are recorded in task history. Task
+   edits and removals are also recorded; removing a task archives it so its
+   history remains available. If this migration was applied before, re-run its
+   latest version to add task editing and archiving support.
+10. Create the first administrator in **Authentication → Users** in the
    Supabase Dashboard. Copy that user's UID.
-8. In the SQL Editor, assign the first admin role using the copied UID:
+11. In the SQL Editor, assign the first admin role using the copied UID:
 
    ```sql
    INSERT INTO public.user_profiles (user_id, role)
    VALUES ('PASTE-AUTH-USER-UUID-HERE', 'admin');
    ```
 
-9. Sign in to the app as that user. Create accounts, set/reset their passwords,
+12. Sign in to the app as that user. Create accounts, set/reset their passwords,
    assign roles and (for clients) parties, and enable/disable access in
    **Admin → User Access & Roles**. Passwords are managed by Supabase Auth.
 

@@ -1,7 +1,9 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import Link from "next/link";
 import { supabase } from "@/lib/supabase";
+import { getPartyProductMrpErrorMessage } from "@/lib/party-product-mrp";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -147,6 +149,17 @@ interface WarehousePackagingStockRow {
   carton_name?: string | null;
 }
 
+interface PrintedPackagingReceipt {
+  id: string;
+  component_type: string;
+  batch_no: string;
+  mfg_date: string;
+  exp_date: string;
+  mrp: number;
+  quantity: number;
+  created_at: string;
+}
+
 interface FillingRequest {
   id: string;
   batch_no: string;
@@ -217,9 +230,12 @@ export default function FillingInchargePage() {
   const cartonLookupSequence = useRef(0);
 
   const [batchNo, setBatchNo] = useState<string>("BATCH-");
+  const [fixedBatchQty, setFixedBatchQty] = useState<number | null>(null);
   const [mfgDate, setMfgDate] = useState<string>(new Date().toISOString().split("T")[0]);
   const [expDate, setExpDate] = useState<string>("");
   const [retailPrice, setRetailPrice] = useState<string>("");
+  const [retailPriceLoading, setRetailPriceLoading] = useState(false);
+  const [retailPriceError, setRetailPriceError] = useState<string | null>(null);
   const [productPackSize, setProductPackSize] = useState<number | null>(null);
   const [productPackUnit, setProductPackUnit] = useState<"ML" | "GM">("ML");
   const [roomNumber, setRoomNumber] = useState("");
@@ -242,6 +258,10 @@ export default function FillingInchargePage() {
   const [stockErrorMsg, setStockErrorMsg] = useState<string | null>(null);
   const [maxPossiblePcs, setMaxPossiblePcs] = useState<number | null>(null);
   const [selectedRequestForModal, setSelectedRequestForModal] = useState<FillingRequest | null>(null);
+  const [printedPackagingReceipts, setPrintedPackagingReceipts] = useState<PrintedPackagingReceipt[]>([]);
+  const [printedPackagingLoading, setPrintedPackagingLoading] = useState(false);
+  const [printedPackagingError, setPrintedPackagingError] = useState<string | null>(null);
+  const [selectedPrintedPackagingReceiptId, setSelectedPrintedPackagingReceiptId] = useState("");
   const packagingStockLookupSequence = useRef(0);
 
   const [filterPartyName, setFilterPartyName] = useState("");
@@ -401,10 +421,50 @@ export default function FillingInchargePage() {
     };
   }, [masterCartonWarehousePartyId, selectedProductId]);
 
+  const loadPrintedPackagingReceipts = async (
+    partyId: string,
+    productId: string,
+    lookupSequence: number
+  ) => {
+    setPrintedPackagingLoading(true);
+    setPrintedPackagingError(null);
+    try {
+      const { data, error } = await supabase
+        .from("inventory_logs")
+        .select("id, component_type, batch_no, mfg_date, exp_date, mrp, quantity, created_at")
+        .eq("action_type", "IN")
+        .eq("party_id", partyId)
+        .eq("product_id", productId)
+        .not("batch_no", "is", null)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      if (lookupSequence === cartonLookupSequence.current) {
+        setPrintedPackagingReceipts((data ?? []) as PrintedPackagingReceipt[]);
+        setPrintedPackagingError(null);
+      }
+    } catch (error) {
+      if (lookupSequence === cartonLookupSequence.current) {
+        console.error("Could not load received printed packaging:", error);
+        setPrintedPackagingError(
+          getMasterCartonErrorMessage(error, "Could not load received stickers and boxes for this product.")
+        );
+      }
+    } finally {
+      if (lookupSequence === cartonLookupSequence.current) setPrintedPackagingLoading(false);
+    }
+  };
+
   // 100% DYNAMIC LIVE STOCK FETCHING FROM SUPABASE INVENTORY TABLE
   const handleProductSelection = async (prodId: string) => {
     const lookupSequence = ++cartonLookupSequence.current;
     setSelectedProductId(prodId);
+    setBatchNo("BATCH-");
+    setFixedBatchQty(null);
+    setMfgDate(new Date().toISOString().split("T")[0]);
+    setExpDate("");
+    setRetailPrice("");
+    setRetailPriceError(null);
+    setRetailPriceLoading(Boolean(prodId));
     setStockErrorMsg(null);
     setPcsRequested("");
     setProductBomPreview([]);
@@ -413,6 +473,10 @@ export default function FillingInchargePage() {
     setWarehousePackagingStock([]);
     setWarehousePackagingStockError(null);
     setWarehousePackagingStockNotice(null);
+    setPrintedPackagingReceipts([]);
+    setPrintedPackagingError(null);
+    setPrintedPackagingLoading(false);
+    setSelectedPrintedPackagingReceiptId("");
     setWarehouseCartonNameColumnAvailable(true);
     setWarehousePackagingStockLoading(false);
     setMasterCartonCount("");
@@ -424,8 +488,47 @@ export default function FillingInchargePage() {
 
     if (!prodId || !selectedPartyId) {
       setMasterCartonSettingLoading(false);
+      setRetailPriceLoading(false);
       return;
     }
+
+    await loadPrintedPackagingReceipts(selectedPartyId, prodId, lookupSequence);
+
+    if (lookupSequence !== cartonLookupSequence.current) return;
+
+    try {
+      const { data: savedMrp, error: mrpError } = await supabase
+        .from("party_product_mrps")
+        .select("mrp, batch_qty, batch_no, mfg_date, exp_date")
+        .eq("party_id", selectedPartyId)
+        .eq("product_id", prodId)
+        .maybeSingle();
+      if (mrpError) throw mrpError;
+      if (lookupSequence === cartonLookupSequence.current) {
+        if (savedMrp) {
+          setRetailPrice(String(savedMrp.mrp));
+          const configuredBatchQty = Number(savedMrp.batch_qty);
+          if (Number.isSafeInteger(configuredBatchQty) && configuredBatchQty > 0) {
+            setFixedBatchQty(configuredBatchQty);
+            setPcsRequested(String(configuredBatchQty));
+          }
+          if (savedMrp.batch_no) setBatchNo(savedMrp.batch_no);
+          if (savedMrp.mfg_date) setMfgDate(savedMrp.mfg_date);
+          if (savedMrp.exp_date) setExpDate(savedMrp.exp_date);
+        }
+      }
+    } catch (error) {
+      if (lookupSequence === cartonLookupSequence.current) {
+        console.error("Could not load the saved party product MRP:", error);
+        setRetailPriceError(
+          getPartyProductMrpErrorMessage(error, "Could not load this party and product's saved MRP.")
+        );
+      }
+    } finally {
+      if (lookupSequence === cartonLookupSequence.current) setRetailPriceLoading(false);
+    }
+
+    if (lookupSequence !== cartonLookupSequence.current) return;
 
     try {
       try {
@@ -526,6 +629,16 @@ export default function FillingInchargePage() {
         setMasterCartonSettingLoading(false);
       }
     }
+  };
+
+  const handlePrintedPackagingSelection = (receiptId: string) => {
+    setSelectedPrintedPackagingReceiptId(receiptId);
+    const receipt = printedPackagingReceipts.find((item) => item.id === receiptId);
+    if (!receipt) return;
+    setBatchNo(receipt.batch_no);
+    setMfgDate(receipt.mfg_date);
+    setExpDate(receipt.exp_date);
+    setRetailPrice(String(receipt.mrp));
   };
 
   const persistMasterCartonSetting = async (
@@ -683,6 +796,12 @@ export default function FillingInchargePage() {
   };
 
   const handleQuantityChange = (qtyVal: string) => {
+    if (fixedBatchQty !== null) {
+      setPcsRequested(String(fixedBatchQty));
+      setStockErrorMsg(null);
+      setMaxPossiblePcs(null);
+      return;
+    }
     setPcsRequested(qtyVal);
     setStockErrorMsg(null);
     setMaxPossiblePcs(null);
@@ -720,12 +839,32 @@ export default function FillingInchargePage() {
 
   const handleCreateRequest = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedPartyId || !selectedProductId || !pcsRequested || !batchNo || !expDate || !retailPrice || !roomNumber) {
+    if (!selectedPartyId || !selectedProductId || !pcsRequested || !batchNo.trim() || !mfgDate || !expDate || !retailPrice || !roomNumber) {
       return alert("Please fill all required fields including Batch No, Expiry Date, Retail Price, and Room.");
+    }
+    if (expDate < mfgDate) {
+      return alert("Expiry date must be on or after the manufacturing date.");
     }
     const qty = Number(pcsRequested);
     if (!Number.isSafeInteger(qty) || qty <= 0) {
       return alert("Quantity must be a whole number greater than zero.");
+    }
+    if (fixedBatchQty !== null && qty !== fixedBatchQty) {
+      return alert(`This product's fixed batch quantity is ${fixedBatchQty.toLocaleString()} Pcs.`);
+    }
+
+    if (fixedBatchQty !== null) {
+      const fixedBatchShortages = productBomPreview
+        .filter((component) => component.available_stock < qty * component.qty_per_unit)
+        .map((component) => {
+          const shortage = Math.ceil(qty * component.qty_per_unit - component.available_stock);
+          return `${shortage} Pcs ${component.component_type.toUpperCase()}s short`;
+        });
+      if (fixedBatchShortages.length > 0) {
+        return alert(
+          `Order Cannot Be Processed!\n\nThe fixed batch quantity exceeds available stock: ${fixedBatchShortages.join(", ")}.`
+        );
+      }
     }
 
     if (stockErrorMsg) {
@@ -744,6 +883,18 @@ export default function FillingInchargePage() {
     setLoading(true);
     let saveStage = "preparing filling request";
     try {
+      saveStage = "checking batch number";
+      const normalizedBatchNo = batchNo.trim();
+      const { data: existingBatch, error: batchLookupError } = await supabase
+        .from("filling_requests")
+        .select("id")
+        .ilike("batch_no", normalizedBatchNo.replace(/[\\%_]/g, "\\$&"))
+        .limit(1);
+      if (batchLookupError) throw batchLookupError;
+      if (existingBatch?.length) {
+        throw new Error("This batch number has already been issued. Enter a new batch number.");
+      }
+
       let savedCartonCount = cartonCount;
       if (
         cartonCount !== null &&
@@ -778,8 +929,8 @@ export default function FillingInchargePage() {
       const totalWeight = generatedComponents.reduce((sum, c) => sum + c.theoretical_weight_kg, 0);
 
       const payload: Record<string, unknown> = {
-        batch_no: batchNo,
-        req_code: batchNo,
+        batch_no: normalizedBatchNo,
+        req_code: normalizedBatchNo,
         mfg_date: mfgDate,
         exp_date: expDate,
         retail_price: parseFloat(retailPrice) || 0,
@@ -827,6 +978,9 @@ export default function FillingInchargePage() {
 
       setSelectedPartyId("");
       setSelectedProductId("");
+      setPrintedPackagingReceipts([]);
+      setPrintedPackagingError(null);
+      setSelectedPrintedPackagingReceiptId("");
       setRoomNumber("");
       setMasterCartonCount("");
       setMasterCartonSettingExists(false);
@@ -835,6 +989,7 @@ export default function FillingInchargePage() {
       const defaultWarehouseId = getDefaultWarehousePartyId(partiesList);
       setMasterCartonWarehousePartyId(defaultWarehouseId);
       setPcsRequested("");
+      setFixedBatchQty(null);
       setRetailPrice("");
       setExpDate("");
       setStockErrorMsg(null);
@@ -1032,6 +1187,12 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
           <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1">Material Requisition & Weight Verification</h1>
         </div>
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+          <Link
+            href="/filling/mrp"
+            className="w-full rounded-xl border border-amber-700/70 bg-amber-950/30 px-3 py-2 text-center text-xs font-bold text-amber-200 hover:bg-amber-900/50 sm:w-auto"
+          >
+            Manage Party / Product MRP
+          </Link>
           <span className="w-full rounded-xl border border-slate-700 bg-slate-800/60 px-3 py-2 text-center text-xs font-bold text-slate-400 sm:w-auto">
             ↩ Returns / Damage — Coming Soon
           </span>
@@ -1057,6 +1218,50 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
           </h2>
 
           <form onSubmit={handleCreateRequest} className="space-y-4">
+            {selectedPartyId && selectedProductId && (
+              <div className="rounded-xl border border-cyan-800/70 bg-cyan-950/20 p-3">
+                <label className="block text-xs font-semibold text-cyan-200">
+                  Warehouse-Received Printed Stickers / Boxes
+                  <select
+                    value={selectedPrintedPackagingReceiptId}
+                    onChange={(event) => handlePrintedPackagingSelection(event.target.value)}
+                    disabled={printedPackagingLoading || printedPackagingReceipts.length === 0}
+                    className="mt-2 w-full rounded-lg border border-slate-700 bg-[#0b0f19] p-3 text-xs text-white disabled:opacity-60"
+                  >
+                    <option value="">
+                      {printedPackagingLoading
+                        ? "Loading warehouse receipts..."
+                        : printedPackagingReceipts.length === 0
+                          ? "No warehouse receipts for this product"
+                          : "-- Select a received sticker / box batch --"}
+                    </option>
+                    {printedPackagingReceipts.map((receipt) => (
+                      <option key={receipt.id} value={receipt.id}>
+                        {receipt.component_type.toUpperCase()} · {receipt.batch_no} · MFG {receipt.mfg_date} · EXP {receipt.exp_date} · MRP Rs. {receipt.mrp} · {receipt.quantity.toLocaleString()} Pcs
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {printedPackagingError && (
+                  <p role="alert" className="mt-2 text-[10px] text-rose-300">
+                    Could not load warehouse packaging details: {printedPackagingError}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void loadPrintedPackagingReceipts(selectedPartyId, selectedProductId, cartonLookupSequence.current)}
+                  disabled={printedPackagingLoading}
+                  className="mt-2 text-[10px] font-semibold text-cyan-300 hover:text-cyan-200 disabled:opacity-50"
+                >
+                  Refresh received packaging
+                </button>
+                {selectedPrintedPackagingReceiptId && (
+                  <p className="mt-2 text-[10px] text-cyan-100">
+                    Selected warehouse receipt filled Batch No, MFG, EXP and MRP above. Verify these details before saving.
+                  </p>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
               <div>
                 <label className="text-xs text-slate-400 block mb-1">Batch Number</label>
@@ -1064,6 +1269,7 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
                   type="text"
                   value={batchNo}
                   onChange={(e) => setBatchNo(e.target.value)}
+                  disabled={retailPriceLoading}
                   className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-purple-400 font-mono font-bold"
                   required
                 />
@@ -1082,6 +1288,7 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
                   type="date"
                   value={mfgDate}
                   onChange={(e) => setMfgDate(e.target.value)}
+                  disabled={retailPriceLoading}
                   className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
                   required
                 />
@@ -1091,8 +1298,10 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
                 <label className="text-xs text-slate-400 block mb-1">Expiry Date</label>
                 <input
                   type="date"
+                  min={mfgDate || undefined}
                   value={expDate}
                   onChange={(e) => setExpDate(e.target.value)}
+                  disabled={retailPriceLoading}
                   className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
                   required
                 />
@@ -1102,13 +1311,24 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
                 <label className="text-xs text-amber-400 block mb-1">Retail Price (PKR)</label>
                 <input
                   type="number"
+                  min="0"
                   step="0.01"
                   value={retailPrice}
-                  onChange={(e) => setRetailPrice(e.target.value)}
+                  onChange={(e) => {
+                    setRetailPrice(e.target.value);
+                    setRetailPriceError(null);
+                  }}
+                  disabled={retailPriceLoading}
                   placeholder="e.g. 450"
                   className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-amber-300 font-mono font-bold"
                   required
                 />
+                {retailPriceLoading && (
+                  <p className="mt-1 text-[10px] text-slate-400">Loading saved party/product MRP...</p>
+                )}
+                {retailPriceError && (
+                  <p role="alert" className="mt-1 text-[10px] text-rose-400">{retailPriceError}</p>
+                )}
               </div>
             </div>
 
@@ -1120,6 +1340,14 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
                   onChange={(e) => {
                     setSelectedPartyId(e.target.value);
                     setSelectedProductId("");
+                    setFixedBatchQty(null);
+                    setPrintedPackagingReceipts([]);
+                    setPrintedPackagingError(null);
+                    setPrintedPackagingLoading(false);
+                    setSelectedPrintedPackagingReceiptId("");
+                    setRetailPrice("");
+                    setRetailPriceLoading(false);
+                    setRetailPriceError(null);
                     cartonLookupSequence.current += 1;
                     setWarehousePackagingStock([]);
                     setWarehousePackagingStockError(null);
@@ -1191,11 +1419,16 @@ const trimmedMasterCartonCount = String(masterCartonCount ?? "").trim();
                   step="1"
                   value={pcsRequested}
                   onChange={(e) => handleQuantityChange(e.target.value)}
-                  placeholder="e.g. 3000"
+                  placeholder={fixedBatchQty === null ? "e.g. 3000" : undefined}
                   className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-amber-300 font-mono font-bold"
                   required
-                  disabled={!selectedProductId}
+                  disabled={!selectedProductId || retailPriceLoading || fixedBatchQty !== null}
                 />
+                {fixedBatchQty !== null && (
+                  <p className="mt-1 text-[10px] text-amber-300">
+                    Fixed quantity for this product: {fixedBatchQty.toLocaleString()} Pcs
+                  </p>
+                )}
               </div>
 
               <div>

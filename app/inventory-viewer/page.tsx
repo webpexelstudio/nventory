@@ -56,9 +56,9 @@ type ExportCell = string | number | null;
 type ExportRow = Record<string, ExportCell>;
 
 export default function WarehouseStaffPortal() {
-  const { profile } = useAppAuth();
-  const isReadOnlyViewer = profile?.role === "inventory_viewer";
-  const [activeTab, setActiveTab] = useState<"balance" | "stock_in" | "stock_out" | "transportation_rent">("balance");
+  const { profile, user } = useAppAuth();
+  const isInventoryViewer = profile?.role === "inventory_viewer";
+  const [activeTab, setActiveTab] = useState<"balance" | "stock_entry" | "stock_in" | "stock_out" | "transportation_rent">("balance");
 
   // Master Data
   const [partiesList, setPartiesList] = useState<Party[]>([]);
@@ -85,6 +85,18 @@ export default function WarehouseStaffPortal() {
   const [outProductId, setOutProductId] = useState("");
   const [outStartDate, setOutStartDate] = useState("");
   const [outEndDate, setOutEndDate] = useState("");
+
+  const [movementAction, setMovementAction] = useState<"IN" | "OUT">("IN");
+  const [movementPartyId, setMovementPartyId] = useState("");
+  const [movementProductId, setMovementProductId] = useState("");
+  const [movementComponentType, setMovementComponentType] = useState("");
+  const [movementQuantity, setMovementQuantity] = useState("");
+  const [movementRemarks, setMovementRemarks] = useState("");
+  const [movementSubmitting, setMovementSubmitting] = useState(false);
+  const [movementError, setMovementError] = useState<string | null>(null);
+  const [movementSuccess, setMovementSuccess] = useState<string | null>(null);
+
+  const actorName = user?.email?.trim() || "office@gmail.com";
 
   const fetchWarehouseData = useCallback(async () => {
     const { data: partyData, error: partyError } = await supabase.from("parties").select("*").order("name");
@@ -161,6 +173,13 @@ export default function WarehouseStaffPortal() {
   const filteredProductsForBal = productsList.filter((p) => p.party_id === balPartyId);
   const filteredProductsForIn = productsList.filter((p) => p.party_id === inPartyId);
   const filteredProductsForOut = productsList.filter((p) => p.party_id === outPartyId);
+  const filteredProductsForMovement = productsList.filter((p) => p.party_id === movementPartyId);
+  const movementComponentTypes = Array.from(new Set(
+    productBomCapacities
+      .filter((bom) => bom.product_id === movementProductId)
+      .map((bom) => bom.component_type.trim())
+      .filter(Boolean)
+  ));
   const formatStockInComponent = (log: InventoryLog) => {
     const componentType = log.component_type.trim().toLowerCase();
     if (!["bottle", "tube", "jar"].includes(componentType)) return log.component_type.toUpperCase();
@@ -346,6 +365,62 @@ export default function WarehouseStaffPortal() {
     return true;
   });
 
+  const handleInventoryMovement = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setMovementError(null);
+    setMovementSuccess(null);
+
+    const quantity = Number(movementQuantity);
+    const selectedParty = partiesList.find((party) => party.id === movementPartyId);
+    const selectedProduct = productsList.find((product) => product.id === movementProductId);
+    const componentType = movementComponentType.trim();
+
+    if (!selectedParty || !selectedProduct || selectedProduct.party_id !== selectedParty.id) {
+      setMovementError("Please select a valid party and product.");
+      return;
+    }
+    if (!movementComponentTypes.some((type) => type.toLowerCase() === componentType.toLowerCase())) {
+      setMovementError("Please select a component type assigned to this product.");
+      return;
+    }
+    if (!Number.isSafeInteger(quantity) || quantity <= 0 || quantity > 2_147_483_647) {
+      setMovementError("Please enter a whole-number quantity between 1 and 2,147,483,647.");
+      return;
+    }
+    if (!actorName) {
+      setMovementError("Your account name could not be identified. Please sign in again.");
+      return;
+    }
+
+    setMovementSubmitting(true);
+    try {
+      const { error } = await supabase.rpc("record_inventory_movement", {
+        p_action_type: movementAction,
+        p_party_id: selectedParty.id,
+        p_product_id: selectedProduct.id,
+        p_component_type: componentType,
+        p_quantity: quantity,
+        p_remarks: movementRemarks.trim() || null,
+      });
+      if (error) throw error;
+
+      setMovementSuccess(`Stock ${movementAction} saved successfully. Recorded by ${actorName}.`);
+      setMovementQuantity("");
+      setMovementRemarks("");
+      await refreshWarehouseData();
+    } catch (error: unknown) {
+      setMovementError(
+        error instanceof Error
+          ? error.message
+          : error && typeof error === "object" && "message" in error
+            ? String(error.message)
+            : String(error)
+      );
+    } finally {
+      setMovementSubmitting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#0b0f19] text-slate-100 p-3 sm:p-6 font-sans space-y-6 uppercase">
       <div className="border-b border-slate-800 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 max-w-7xl mx-auto">
@@ -356,7 +431,7 @@ export default function WarehouseStaffPortal() {
           <h1 className="text-xl sm:text-2xl font-extrabold text-white mt-1">Stock Balance, IN & OUT Viewer</h1>
         </div>
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-          {!isReadOnlyViewer && (
+          {!isInventoryViewer && (
             <Link href="/production-sheet" className="w-full rounded-xl border border-cyan-700 bg-cyan-800 px-3 py-2 text-center text-xs font-bold text-white hover:bg-cyan-700 sm:w-auto">
               Hourly Production Sheet
             </Link>
@@ -387,6 +462,14 @@ export default function WarehouseStaffPortal() {
             🏢 Inventory Balance
           </button>
           <button
+            onClick={() => setActiveTab("stock_entry")}
+            className={`px-4 py-2.5 rounded-xl text-xs font-bold transition whitespace-nowrap shrink-0 ${
+              activeTab === "stock_entry" ? "bg-emerald-600 text-white shadow-lg" : "bg-[#121827] text-slate-400 hover:text-white"
+            }`}
+          >
+            ➕ Stock IN / OUT
+          </button>
+          <button
             onClick={() => setActiveTab("stock_in")}
             className={`px-4 py-2.5 rounded-xl text-xs font-bold transition whitespace-nowrap shrink-0 ${
               activeTab === "stock_in" ? "bg-emerald-600 text-white shadow-lg" : "bg-[#121827] text-slate-400 hover:text-white"
@@ -411,6 +494,143 @@ export default function WarehouseStaffPortal() {
             🚚 Transportation Rent
           </button>
         </div>
+
+        {activeTab === "stock_entry" && (
+          <div className="bg-[#121827] border border-slate-800 p-4 sm:p-6 rounded-2xl shadow-xl space-y-4">
+            <div>
+              <h2 className="text-sm sm:text-md font-bold text-white">Record Inventory IN / OUT</h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Every movement is automatically recorded with your account name in its remarks.
+              </p>
+            </div>
+
+            {movementError && (
+              <p role="alert" className="rounded-lg border border-rose-700/50 bg-rose-950/40 p-3 text-sm text-rose-300 normal-case">
+                {movementError}
+              </p>
+            )}
+            {movementSuccess && (
+              <p role="status" className="rounded-lg border border-emerald-700/50 bg-emerald-950/40 p-3 text-sm text-emerald-300 normal-case">
+                {movementSuccess}
+              </p>
+            )}
+
+            <form onSubmit={handleInventoryMovement} className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <div>
+                  <label htmlFor="movement-action" className="text-[10px] text-slate-400 block mb-1">Movement</label>
+                  <select
+                    id="movement-action"
+                    value={movementAction}
+                    onChange={(event) => setMovementAction(event.target.value === "OUT" ? "OUT" : "IN")}
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-white"
+                  >
+                    <option value="IN">Stock IN</option>
+                    <option value="OUT">Stock OUT</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="movement-party" className="text-[10px] text-slate-400 block mb-1">Party</label>
+                  <select
+                    id="movement-party"
+                    required
+                    value={movementPartyId}
+                    onChange={(event) => {
+                      setMovementPartyId(event.target.value);
+                      setMovementProductId("");
+                    }}
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-white"
+                  >
+                    <option value="">-- Select Party --</option>
+                    {partiesList.map((party) => (
+                      <option key={party.id} value={party.id}>{party.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="movement-product" className="text-[10px] text-slate-400 block mb-1">Product</label>
+                  <select
+                    id="movement-product"
+                    required
+                    value={movementProductId}
+                    onChange={(event) => {
+                      setMovementProductId(event.target.value);
+                      setMovementComponentType("");
+                    }}
+                    disabled={!movementPartyId}
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-white disabled:opacity-50"
+                  >
+                    <option value="">-- Select Product --</option>
+                    {filteredProductsForMovement.map((product) => (
+                      <option key={product.id} value={product.id}>{product.product_name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="movement-component" className="text-[10px] text-slate-400 block mb-1">Component Type</label>
+                  <select
+                    id="movement-component"
+                    required
+                    value={movementComponentType}
+                    onChange={(event) => setMovementComponentType(event.target.value)}
+                    disabled={!movementProductId || movementComponentTypes.length === 0}
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-white disabled:opacity-50"
+                  >
+                    <option value="">
+                      {!movementProductId
+                        ? "-- Select Product First --"
+                        : movementComponentTypes.length === 0
+                          ? "-- No Component Types Assigned --"
+                          : "-- Select Component Type --"}
+                    </option>
+                    {movementComponentTypes.map((componentType) => (
+                      <option key={componentType} value={componentType}>{componentType}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="movement-quantity" className="text-[10px] text-slate-400 block mb-1">Quantity (whole number)</label>
+                  <input
+                    id="movement-quantity"
+                    type="number"
+                    required
+                    min="1"
+                    max="2147483647"
+                    step="1"
+                    value={movementQuantity}
+                    onChange={(event) => setMovementQuantity(event.target.value)}
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-400 block mb-1">Recorded By</label>
+                  <p className="rounded-lg border border-slate-800 bg-[#0b0f19] p-2.5 text-xs text-emerald-300 normal-case">
+                    {actorName || "Signed-in account unavailable"}
+                  </p>
+                </div>
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <label htmlFor="movement-remarks" className="text-[10px] text-slate-400 block mb-1">Additional Remarks (optional)</label>
+                  <textarea
+                    id="movement-remarks"
+                    rows={2}
+                    value={movementRemarks}
+                    onChange={(event) => setMovementRemarks(event.target.value)}
+                    className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-2.5 text-xs text-white normal-case"
+                  />
+                </div>
+              </div>
+              <button
+                type="submit"
+                disabled={movementSubmitting || !actorName}
+                className={`rounded-lg px-4 py-2.5 text-xs font-bold text-white transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                  movementAction === "IN" ? "bg-emerald-600 hover:bg-emerald-700" : "bg-amber-600 hover:bg-amber-700"
+                }`}
+              >
+                {movementSubmitting ? "Saving..." : `Save Stock ${movementAction}`}
+              </button>
+            </form>
+          </div>
+        )}
 
         {/* TAB 1: INVENTORY BALANCE */}
         {activeTab === "balance" && (
@@ -741,7 +961,7 @@ export default function WarehouseStaffPortal() {
           </div>
         )}
         {activeTab === "transportation_rent" && (
-          <TransportationRentPanel mode={isReadOnlyViewer ? "add-only" : "viewer"} />
+          <TransportationRentPanel mode={isInventoryViewer ? "add-only" : "viewer"} />
         )}
       </div>
     </div>

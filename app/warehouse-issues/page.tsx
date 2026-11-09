@@ -134,6 +134,10 @@ interface StockInComponentRow {
   component_type: string;
   quantity: string;
   remarks: string;
+  batch_no?: string;
+  mfg_date?: string;
+  exp_date?: string;
+  mrp?: string;
 }
 
 interface StockOutComponentRow {
@@ -177,6 +181,13 @@ const fetchSavedComponentTypes = async () => {
 
 const getQuantityUnit = (componentType: string) =>
   componentType.trim().toLowerCase() === "master_carton" ? "Cartons" : "Pcs";
+
+const getPrintedPackagingType = (componentType: string): "sticker" | "box" | null => {
+  const normalizedType = componentType.trim().toLowerCase();
+  if (normalizedType.includes("sticker")) return "sticker";
+  if (normalizedType.includes("box")) return "box";
+  return null;
+};
 
 const isTapeComponentType = (componentType: string) => {
   const normalizedType = componentType.trim().toLowerCase().replace(/[\s-]+/g, "_");
@@ -633,6 +644,14 @@ export default function WarehousePortalPage() {
     if (componentTypes.some((type) => !stockInComponentTypes.some((allowedType) => allowedType.toLowerCase() === type))) {
       return alert("Please select only components configured for this product by Admin.");
     }
+    if (stockInRows.some((row) => {
+      if (!getPrintedPackagingType(row.component_type)) return false;
+      const mrp = row.mrp?.trim();
+      return (row.mfg_date && row.exp_date && row.exp_date < row.mfg_date) ||
+        (Boolean(mrp) && (!Number.isFinite(Number(mrp)) || Number(mrp) < 0));
+    })) {
+      return alert("Expiry Date must not be before Manufacturing Date, and MRP must be zero or more.");
+    }
 
     setLoading(true);
     try {
@@ -640,6 +659,12 @@ export default function WarehousePortalPage() {
         componentType: row.component_type,
         quantity: Number(row.quantity),
         remarks: row.remarks.trim(),
+        ...(getPrintedPackagingType(row.component_type) ? {
+          ...(row.batch_no?.trim() ? { batchNo: row.batch_no.trim() } : {}),
+          ...(row.mfg_date ? { mfgDate: row.mfg_date } : {}),
+          ...(row.exp_date ? { expDate: row.exp_date } : {}),
+          ...(row.mrp?.trim() ? { mrp: Number(row.mrp) } : {}),
+        } : {}),
       }));
       await recordWarehouseStockIn(selectedPartyId, selectedProductId, receivedRows, "");
 
@@ -662,6 +687,10 @@ export default function WarehousePortalPage() {
       componentType: string;
       quantity: number;
       remarks?: string;
+      batchNo?: string;
+      mfgDate?: string;
+      expDate?: string;
+      mrp?: number;
       planType?: string;
       nigehbanQuantity?: number;
       cartonCount?: number;
@@ -677,7 +706,9 @@ export default function WarehousePortalPage() {
     const logPayloads = receivedRows.map((row) => ({
       action_type: "IN",
       party_name: partyObj.name,
+      party_id: partyObj.id,
       product_name: productName,
+      product_id: prodObj?.id ?? null,
       component_type: row.componentType,
       quantity: row.quantity,
       remarks: row.remarks?.trim() ||
@@ -687,6 +718,10 @@ export default function WarehousePortalPage() {
       ...(row.nigehbanQuantity === undefined ? {} : { nigehban_quantity: row.nigehbanQuantity }),
       ...(row.cartonCount === undefined ? {} : { carton_count: row.cartonCount }),
       ...(row.cartonName === undefined ? {} : { carton_name: row.cartonName }),
+      ...(row.batchNo === undefined ? {} : { batch_no: row.batchNo }),
+      ...(row.mfgDate === undefined ? {} : { mfg_date: row.mfgDate }),
+      ...(row.expDate === undefined ? {} : { exp_date: row.expDate }),
+      ...(row.mrp === undefined ? {} : { mrp: row.mrp }),
     }));
 
     const { error: logError } = await supabase.from("inventory_logs").insert(logPayloads);
@@ -1623,87 +1658,158 @@ export default function WarehousePortalPage() {
                     </button>
                   </div>
                   {stockInRows.map((row, rowIndex) => (
-                    <div key={`${row.component_type}-${rowIndex}`} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_auto] gap-3 items-end">
-                      <div>
-                        <label className="text-xs text-slate-400 block mb-1">
-                          Component Type {rowIndex + 1}
-                        </label>
-                        <select
-                          value={row.component_type}
-                          onChange={(event) =>
-                            setStockInRows((rows) =>
-                              rows.map((item, index) =>
-                                index === rowIndex ? { ...item, component_type: event.target.value } : item
+                    <div key={`${row.component_type}-${rowIndex}`} className="space-y-3 rounded-lg border border-slate-800 p-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_auto] gap-3 items-end">
+                        <div>
+                          <label className="text-xs text-slate-400 block mb-1">
+                            Component Type {rowIndex + 1}
+                          </label>
+                          <select
+                            value={row.component_type}
+                            onChange={(event) =>
+                              setStockInRows((rows) =>
+                                rows.map((item, index) =>
+                                  index === rowIndex ? { ...item, component_type: event.target.value } : item
+                                )
                               )
-                            )
-                          }
-                          className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white uppercase"
-                          required
+                            }
+                            className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white uppercase"
+                            required
+                          >
+                            <option value="" disabled>-- Select configured component --</option>
+                            {stockInComponentTypes.map((type) => (
+                              <option
+                                key={type}
+                                value={type}
+                                disabled={stockInRows.some(
+                                  (item, index) =>
+                                    index !== rowIndex && item.component_type.toLowerCase() === type.toLowerCase()
+                                )}
+                              >
+                                {type.replace("_", " ").toUpperCase()}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-xs text-amber-400 block mb-1">Quantity Received (Pcs)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={row.quantity}
+                            onChange={(event) =>
+                              setStockInRows((rows) =>
+                                rows.map((item, index) =>
+                                  index === rowIndex ? { ...item, quantity: event.target.value } : item
+                                )
+                              )
+                            }
+                            placeholder="e.g. 5000"
+                            className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-amber-300 font-mono font-bold"
+                            required
+                          />
+                          {selectedPartyId && selectedProductId && (
+                            <p className="mt-1 text-[10px] text-cyan-300">
+                              Current stock: {getCurrentStockQuantity(selectedPartyId, selectedProductId, row.component_type)} Pcs
+                            </p>
+                          )}
+                        </div>
+                        <div>
+                          <label className="text-xs text-slate-400 block mb-1">Remarks / Note</label>
+                          <input
+                            type="text"
+                            value={row.remarks}
+                            onChange={(event) =>
+                              setStockInRows((rows) =>
+                                rows.map((item, index) =>
+                                  index === rowIndex ? { ...item, remarks: event.target.value } : item
+                                )
+                              )
+                            }
+                            placeholder="Supplier details"
+                            className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setStockInRows((rows) => rows.filter((_, index) => index !== rowIndex))}
+                          disabled={stockInRows.length === 1}
+                          aria-label={`Remove component row ${rowIndex + 1}`}
+                          className="px-3 py-3 rounded-lg bg-rose-600/20 text-rose-300 border border-rose-500/30 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
                         >
-                          <option value="" disabled>-- Select configured component --</option>
-                          {stockInComponentTypes.map((type) => (
-                            <option
-                              key={type}
-                              value={type}
-                              disabled={stockInRows.some(
-                                (item, index) =>
-                                  index !== rowIndex && item.component_type.toLowerCase() === type.toLowerCase()
-                              )}
-                            >
-                              {type.replace("_", " ").toUpperCase()}
-                            </option>
-                          ))}
-                        </select>
+                          Remove
+                        </button>
                       </div>
-                      <div>
-                        <label className="text-xs text-amber-400 block mb-1">Quantity Received (Pcs)</label>
-                        <input
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={row.quantity}
-                          onChange={(event) =>
-                            setStockInRows((rows) =>
-                              rows.map((item, index) =>
-                                index === rowIndex ? { ...item, quantity: event.target.value } : item
-                              )
-                            )
-                          }
-                          placeholder="e.g. 5000"
-                          className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-amber-300 font-mono font-bold"
-                          required
-                        />
-                        {selectedPartyId && selectedProductId && (
-                          <p className="mt-1 text-[10px] text-cyan-300">
-                            Current stock: {getCurrentStockQuantity(selectedPartyId, selectedProductId, row.component_type)} Pcs
-                          </p>
-                        )}
-                      </div>
-                      <div>
-                        <label className="text-xs text-slate-400 block mb-1">Remarks / Note</label>
-                        <input
-                          type="text"
-                          value={row.remarks}
-                          onChange={(event) =>
-                            setStockInRows((rows) =>
-                              rows.map((item, index) =>
-                                index === rowIndex ? { ...item, remarks: event.target.value } : item
-                              )
-                            )
-                          }
-                          placeholder="Supplier details or batch info"
-                          className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setStockInRows((rows) => rows.filter((_, index) => index !== rowIndex))}
-                        disabled={stockInRows.length === 1}
-                        aria-label={`Remove component row ${rowIndex + 1}`}
-                        className="px-3 py-3 rounded-lg bg-rose-600/20 text-rose-300 border border-rose-500/30 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        Remove
-                      </button>
+                      {getPrintedPackagingType(row.component_type) && (
+                        <div className="grid grid-cols-1 gap-3 rounded-lg border border-cyan-800/60 bg-cyan-950/20 p-3 sm:grid-cols-2 lg:grid-cols-4">
+                          <div>
+                            <label className="text-xs text-cyan-200 block mb-1">
+                              Printed {getPrintedPackagingType(row.component_type)} Batch Number
+                            </label>
+                            <input
+                              value={row.batch_no ?? ""}
+                              onChange={(event) =>
+                                setStockInRows((rows) =>
+                                  rows.map((item, index) =>
+                                    index === rowIndex ? { ...item, batch_no: event.target.value } : item
+                                  )
+                                )
+                              }
+                              className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-slate-400 block mb-1">Manufacturing Date</label>
+                            <input
+                              type="date"
+                              value={row.mfg_date ?? ""}
+                              onChange={(event) =>
+                                setStockInRows((rows) =>
+                                  rows.map((item, index) =>
+                                    index === rowIndex ? { ...item, mfg_date: event.target.value } : item
+                                  )
+                                )
+                              }
+                              className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-slate-400 block mb-1">Expiry Date</label>
+                            <input
+                              type="date"
+                              min={row.mfg_date || undefined}
+                              value={row.exp_date ?? ""}
+                              onChange={(event) =>
+                                setStockInRows((rows) =>
+                                  rows.map((item, index) =>
+                                    index === rowIndex ? { ...item, exp_date: event.target.value } : item
+                                  )
+                                )
+                              }
+                              className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-amber-300 block mb-1">MRP (PKR)</label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={row.mrp ?? ""}
+                              onChange={(event) =>
+                                setStockInRows((rows) =>
+                                  rows.map((item, index) =>
+                                    index === rowIndex ? { ...item, mrp: event.target.value } : item
+                                  )
+                                )
+                              }
+                              placeholder="e.g. 450"
+                              className="w-full bg-[#0b0f19] border border-slate-800 rounded-lg p-3 text-xs text-amber-300"
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
